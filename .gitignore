@@ -1,0 +1,19 @@
+# Build outputs
+dist/
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+
+# Visual Studio / Windows
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Local environment config (private)
+.env
+.env.*
+!.env.example
