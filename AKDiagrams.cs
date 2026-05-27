@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
@@ -11,13 +13,29 @@ using System.Windows.Forms;
 
 namespace AKDiagrams
 {
+    public static class AppInfo
+    {
+        public const string Name = "ak-diagrams";
+        public const string Version = "2.0.0";
+    }
+
     public enum ToolKind
     {
         Select,
         Block,
         Device,
         Wire,
-        Text
+        Text,
+        Image,
+        ColorPicker
+    }
+
+    public enum DragKind
+    {
+        None,
+        Move,
+        Resize,
+        WirePoint
     }
 
     [DataContract]
@@ -51,10 +69,82 @@ namespace AKDiagrams
     }
 
     [DataContract]
+    public class FloatRect
+    {
+        [DataMember]
+        public float X { get; set; }
+
+        [DataMember]
+        public float Y { get; set; }
+
+        [DataMember]
+        public float Width { get; set; }
+
+        [DataMember]
+        public float Height { get; set; }
+
+        public FloatRect()
+        {
+        }
+
+        public FloatRect(float x, float y, float width, float height)
+        {
+            X = x;
+            Y = y;
+            Width = width;
+            Height = height;
+        }
+
+        public RectangleF ToRectangleF()
+        {
+            return new RectangleF(X, Y, Width, Height);
+        }
+
+        public static FloatRect FromRectangleF(RectangleF rect)
+        {
+            return new FloatRect(rect.X, rect.Y, rect.Width, rect.Height);
+        }
+    }
+
+    [DataContract]
+    public class WireConnection
+    {
+        [DataMember]
+        public string ElementId { get; set; }
+
+        [DataMember]
+        public float AnchorX { get; set; }
+
+        [DataMember]
+        public float AnchorY { get; set; }
+
+        public WireConnection()
+        {
+            ElementId = string.Empty;
+        }
+
+        public WireConnection(string elementId, float anchorX, float anchorY)
+        {
+            ElementId = elementId;
+            AnchorX = anchorX;
+            AnchorY = anchorY;
+        }
+    }
+
+    [DataContract]
     public class DiagramItem
     {
         [DataMember]
+        public string Id { get; set; }
+
+        [DataMember]
         public string Type { get; set; }
+
+        [DataMember]
+        public string Category { get; set; }
+
+        [DataMember]
+        public FloatRect Bounds { get; set; }
 
         [DataMember]
         public List<FloatPoint> Points { get; set; }
@@ -64,6 +154,9 @@ namespace AKDiagrams
 
         [DataMember]
         public string FillColor { get; set; }
+
+        [DataMember]
+        public string OutlineColor { get; set; }
 
         [DataMember]
         public string LineColor { get; set; }
@@ -77,16 +170,44 @@ namespace AKDiagrams
         [DataMember]
         public bool Arrow { get; set; }
 
+        [DataMember]
+        public string FontFamily { get; set; }
+
+        [DataMember]
+        public string ImageDataBase64 { get; set; }
+
+        [DataMember]
+        public string ImageExtension { get; set; }
+
+        [DataMember]
+        public string SourceFileName { get; set; }
+
+        [DataMember]
+        public WireConnection StartConnection { get; set; }
+
+        [DataMember]
+        public WireConnection EndConnection { get; set; }
+
         public DiagramItem()
         {
+            Id = string.Empty;
             Type = string.Empty;
+            Category = "General";
+            Bounds = new FloatRect();
             Points = new List<FloatPoint>();
             Label = string.Empty;
             FillColor = "#F2F5FF";
+            OutlineColor = "#111111";
             LineColor = "#111111";
             TextColor = "#111111";
             LineWidth = 2f;
             Arrow = false;
+            FontFamily = "Times New Roman";
+            ImageDataBase64 = string.Empty;
+            ImageExtension = "png";
+            SourceFileName = string.Empty;
+            StartConnection = null;
+            EndConnection = null;
         }
     }
 
@@ -97,17 +218,48 @@ namespace AKDiagrams
         public string App { get; set; }
 
         [DataMember]
-        public int Version { get; set; }
+        public string Version { get; set; }
+
+        [DataMember]
+        public string BackgroundColor { get; set; }
 
         [DataMember]
         public List<DiagramItem> Items { get; set; }
 
         public DiagramDocument()
         {
-            App = "ak-diagrams";
-            Version = 1;
+            App = AppInfo.Name;
+            Version = AppInfo.Version;
+            BackgroundColor = "#F8F8F8";
             Items = new List<DiagramItem>();
         }
+    }
+
+    public class ElementDefinition
+    {
+        public string Name { get; private set; }
+        public string Category { get; private set; }
+        public ToolKind Tool { get; private set; }
+
+        public ElementDefinition(string name, string category, ToolKind tool)
+        {
+            Name = name;
+            Category = category;
+            Tool = tool;
+        }
+    }
+
+    public static class ElementLibrary
+    {
+        public static readonly List<ElementDefinition> Items = new List<ElementDefinition>
+        {
+            new ElementDefinition("Block", "Core", ToolKind.Block),
+            new ElementDefinition("Device", "Core", ToolKind.Device),
+            new ElementDefinition("Wire", "Core", ToolKind.Wire),
+            new ElementDefinition("Text", "Annotation", ToolKind.Text),
+            new ElementDefinition("Image", "Reference", ToolKind.Image),
+            new ElementDefinition("Color Picker", "Reference", ToolKind.ColorPicker)
+        };
     }
 
     public class DiagramCanvas : Panel
@@ -118,24 +270,23 @@ namespace AKDiagrams
             ResizeRedraw = true;
             Dock = DockStyle.Fill;
             BackColor = Color.FromArgb(248, 248, 248);
-            Cursor = Cursors.Cross;
+            Cursor = Cursors.Arrow;
         }
     }
 
     public static class DotEnvLoader
     {
-        public static void Load(string filePath)
+        public static bool Load(string filePath)
         {
             if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
             {
-                return;
+                return false;
             }
 
-            var lines = File.ReadAllLines(filePath);
-            foreach (var rawLine in lines)
+            foreach (var rawLine in File.ReadAllLines(filePath))
             {
                 var line = rawLine.Trim();
-                if (string.IsNullOrEmpty(line) || line.StartsWith("#"))
+                if (line.Length == 0 || line.StartsWith("#"))
                 {
                     continue;
                 }
@@ -148,7 +299,7 @@ namespace AKDiagrams
 
                 var key = line.Substring(0, separatorIndex).Trim();
                 var value = line.Substring(separatorIndex + 1).Trim();
-                if (string.IsNullOrWhiteSpace(key))
+                if (key.Length == 0)
                 {
                     continue;
                 }
@@ -160,6 +311,7 @@ namespace AKDiagrams
 
                 Environment.SetEnvironmentVariable(key, value, EnvironmentVariableTarget.Process);
             }
+            return true;
         }
     }
 
@@ -169,56 +321,96 @@ namespace AKDiagrams
         private readonly ToolStrip toolStrip = new ToolStrip();
         private readonly StatusStrip statusStrip = new StatusStrip();
         private readonly ToolStripStatusLabel statusLabel = new ToolStripStatusLabel();
+        private readonly Panel propertiesPanel = new Panel();
         private readonly Dictionary<ToolKind, ToolStripButton> toolButtons = new Dictionary<ToolKind, ToolStripButton>();
         private readonly List<DiagramItem> items = new List<DiagramItem>();
+        private readonly Dictionary<string, Image> imageCache = new Dictionary<string, Image>();
 
-        private readonly ToolStripComboBox widthCombo = new ToolStripComboBox();
+        private readonly ToolStripComboBox colorTargetCombo = new ToolStripComboBox();
         private readonly ToolStripButton fillColorButton = new ToolStripButton("Fill");
+        private readonly ToolStripButton outlineColorButton = new ToolStripButton("Outline");
         private readonly ToolStripButton lineColorButton = new ToolStripButton("Line");
         private readonly ToolStripButton textColorButton = new ToolStripButton("Text");
+        private readonly ToolStripButton backgroundColorButton = new ToolStripButton("Background");
         private readonly ToolStripButton arrowToggleButton = new ToolStripButton("Arrow");
         private readonly ToolStripButton snapToggleButton = new ToolStripButton("Snap");
         private readonly ToolStripButton gridToggleButton = new ToolStripButton("Grid");
 
+        private NumericUpDown xBox;
+        private NumericUpDown yBox;
+        private NumericUpDown widthBox;
+        private NumericUpDown heightBox;
+        private NumericUpDown lineWidthBox;
+        private ComboBox fontCombo;
+        private Button fillPanelButton;
+        private Button outlinePanelButton;
+        private Button linePanelButton;
+        private Button textPanelButton;
+        private Button backgroundPanelButton;
+
         private ToolKind currentTool = ToolKind.Select;
         private DiagramItem selectedItem;
+        private DragKind dragKind = DragKind.None;
+        private string resizeHandle = string.Empty;
+        private int activeWirePointIndex = -1;
+        private PointF dragStart;
+        private PointF currentPointer;
+        private PointF? drawStart;
+        private bool movedInDrag;
+        private bool updatingProperties;
+
+        private readonly List<FloatPoint> pendingWirePoints = new List<FloatPoint>();
+        private WireConnection pendingStartConnection;
 
         private bool snapToGrid = true;
         private bool showGrid = true;
         private bool wireArrow = true;
         private readonly int gridSize = 20;
+        private int nextItemNumber = 1;
 
         private Color fillColor = Color.FromArgb(242, 245, 255);
+        private Color outlineColor = Color.FromArgb(17, 17, 17);
         private Color lineColor = Color.FromArgb(17, 17, 17);
         private Color textColor = Color.FromArgb(17, 17, 17);
+        private Color backgroundColor = Color.FromArgb(248, 248, 248);
         private float lineWidth = 2f;
-
-        private PointF? drawStart;
-        private PointF currentPointer;
-        private bool dragging;
-        private bool movedInDrag;
-        private PointF dragStart;
-        private PointF? wireStart;
+        private string fontFamily = "Times New Roman";
         private string currentPath = string.Empty;
         private readonly string defaultDialogDirectory;
 
         public DiagramForm()
         {
-            Text = "ak-diagrams";
+            Text = AppInfo.Name + " " + AppInfo.Version;
             Width = 1440;
             Height = 900;
-            MinimumSize = new Size(1080, 720);
+            MinimumSize = new Size(1120, 720);
             StartPosition = FormStartPosition.CenterScreen;
             KeyPreview = true;
+            AutoScaleMode = AutoScaleMode.Dpi;
 
             var appDirectory = AppDomain.CurrentDomain.BaseDirectory;
-            DotEnvLoader.Load(Path.Combine(appDirectory, ".env"));
-            defaultDialogDirectory = ResolveDefaultDialogDirectory(appDirectory);
+            var envBaseDirectory = appDirectory;
+            var appEnvPath = Path.Combine(appDirectory, ".env");
+            if (DotEnvLoader.Load(appEnvPath))
+            {
+                envBaseDirectory = appDirectory;
+            }
+
+            var workingDirectory = Directory.GetCurrentDirectory();
+            var workingEnvPath = Path.Combine(workingDirectory, ".env");
+            if (!string.Equals(Path.GetFullPath(appEnvPath), Path.GetFullPath(workingEnvPath), StringComparison.OrdinalIgnoreCase) && DotEnvLoader.Load(workingEnvPath))
+            {
+                envBaseDirectory = workingDirectory;
+            }
+
+            defaultDialogDirectory = ResolveDefaultDialogDirectory(envBaseDirectory);
 
             InitializeMenuAndToolbar();
             InitializeCanvas();
+            InitializePropertiesPanel();
             InitializeStatusBar();
             UpdateColorButtons();
+            UpdatePropertiesPanel();
             SetStatus("Ready");
         }
 
@@ -226,14 +418,21 @@ namespace AKDiagrams
         {
             var menuStrip = new MenuStrip();
             var fileMenu = new ToolStripMenuItem("File");
-            fileMenu.DropDownItems.Add("New", null, (s, e) => NewFile());
-            fileMenu.DropDownItems.Add("Open", null, (s, e) => OpenFile());
-            fileMenu.DropDownItems.Add("Save", null, (s, e) => SaveFile());
-            fileMenu.DropDownItems.Add("Save As", null, (s, e) => SaveFileAs());
-            fileMenu.DropDownItems.Add("Export SVG", null, (s, e) => ExportSvg());
+            fileMenu.DropDownItems.Add("New", null, delegate { NewFile(); });
+            fileMenu.DropDownItems.Add("Open", null, delegate { OpenFile(); });
+            fileMenu.DropDownItems.Add("Save", null, delegate { SaveFile(); });
+            fileMenu.DropDownItems.Add("Save As", null, delegate { SaveFileAs(); });
             fileMenu.DropDownItems.Add("-");
-            fileMenu.DropDownItems.Add("Exit", null, (s, e) => Close());
+            fileMenu.DropDownItems.Add("Export SVG", null, delegate { ExportSvg(); });
+            fileMenu.DropDownItems.Add("Export PNG", null, delegate { ExportPng(); });
+            fileMenu.DropDownItems.Add("Export PDF", null, delegate { ExportPdf(); });
+            fileMenu.DropDownItems.Add("-");
+            fileMenu.DropDownItems.Add("Exit", null, delegate { Close(); });
             menuStrip.Items.Add(fileMenu);
+
+            var insertMenu = new ToolStripMenuItem("Insert");
+            insertMenu.DropDownItems.Add("Image", null, delegate { InsertImageAtCenter(); });
+            menuStrip.Items.Add(insertMenu);
 
             Controls.Add(menuStrip);
             MainMenuStrip = menuStrip;
@@ -241,72 +440,184 @@ namespace AKDiagrams
             toolStrip.GripStyle = ToolStripGripStyle.Hidden;
             toolStrip.Dock = DockStyle.Top;
 
-            AddToolStripButton("New", (s, e) => NewFile());
-            AddToolStripButton("Open", (s, e) => OpenFile());
-            AddToolStripButton("Save", (s, e) => SaveFile());
-            AddToolStripButton("Save As", (s, e) => SaveFileAs());
-            AddToolStripButton("Export SVG", (s, e) => ExportSvg());
+            AddToolStripButton("New", delegate { NewFile(); }, "Start a new diagram");
+            AddToolStripButton("Open", delegate { OpenFile(); }, "Open an ak-diagrams project");
+            AddToolStripButton("Save", delegate { SaveFile(); }, "Save this project");
+            AddToolStripButton("SVG", delegate { ExportSvg(); }, "Export vector SVG");
+            AddToolStripButton("PNG", delegate { ExportPng(); }, "Export PNG image");
+            AddToolStripButton("PDF", delegate { ExportPdf(); }, "Export PDF");
 
             toolStrip.Items.Add(new ToolStripSeparator());
 
             AddToolButton("Select", ToolKind.Select);
-            AddToolButton("Block", ToolKind.Block);
-            AddToolButton("Device", ToolKind.Device);
-            AddToolButton("Wire", ToolKind.Wire);
-            AddToolButton("Text", ToolKind.Text);
+            foreach (var definition in ElementLibrary.Items)
+            {
+                AddToolButton(definition.Name, definition.Tool);
+            }
 
             toolStrip.Items.Add(new ToolStripSeparator());
-            toolStrip.Items.Add(new ToolStripLabel("Width"));
+            AddToolStripButton("Finish Wire", delegate { FinishPendingWire(); }, "Finish the active wire");
+            AddToolStripButton("Cancel Wire", delegate { CancelPendingWire(); }, "Cancel the active wire");
 
-            widthCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-            widthCombo.Items.AddRange(new object[] { "1", "2", "3", "4", "6", "8", "10" });
-            widthCombo.SelectedIndex = 1;
-            widthCombo.AutoSize = false;
-            widthCombo.Width = 60;
-            widthCombo.SelectedIndexChanged += (s, e) =>
-            {
-                float value;
-                if (float.TryParse(Convert.ToString(widthCombo.SelectedItem), out value))
-                {
-                    lineWidth = value;
-                }
-            };
-            toolStrip.Items.Add(widthCombo);
+            toolStrip.Items.Add(new ToolStripSeparator());
 
-            fillColorButton.Click += (s, e) => PickColor("fill");
-            lineColorButton.Click += (s, e) => PickColor("line");
-            textColorButton.Click += (s, e) => PickColor("text");
+            colorTargetCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+            colorTargetCombo.AutoSize = false;
+            colorTargetCombo.Width = 95;
+            colorTargetCombo.Items.AddRange(new object[] { "Fill", "Outline", "Line", "Text", "Background" });
+            colorTargetCombo.SelectedIndex = 0;
+            colorTargetCombo.ToolTipText = "Target for the color picker";
+            toolStrip.Items.Add(colorTargetCombo);
+
+            fillColorButton.Click += delegate { PickColor("fill"); };
+            outlineColorButton.Click += delegate { PickColor("outline"); };
+            lineColorButton.Click += delegate { PickColor("line"); };
+            textColorButton.Click += delegate { PickColor("text"); };
+            backgroundColorButton.Click += delegate { PickColor("background"); };
             toolStrip.Items.Add(fillColorButton);
+            toolStrip.Items.Add(outlineColorButton);
             toolStrip.Items.Add(lineColorButton);
             toolStrip.Items.Add(textColorButton);
-
-            AddToolStripButton("Apply Style", (s, e) => ApplyStyleToSelected());
+            toolStrip.Items.Add(backgroundColorButton);
 
             toolStrip.Items.Add(new ToolStripSeparator());
 
             arrowToggleButton.CheckOnClick = true;
             arrowToggleButton.Checked = wireArrow;
-            arrowToggleButton.CheckedChanged += (s, e) => wireArrow = arrowToggleButton.Checked;
+            arrowToggleButton.CheckedChanged += delegate { wireArrow = arrowToggleButton.Checked; };
+            arrowToggleButton.ToolTipText = "Toggle arrows for new and selected wires";
             toolStrip.Items.Add(arrowToggleButton);
 
             snapToggleButton.CheckOnClick = true;
             snapToggleButton.Checked = snapToGrid;
-            snapToggleButton.CheckedChanged += (s, e) => snapToGrid = snapToggleButton.Checked;
+            snapToggleButton.CheckedChanged += delegate { snapToGrid = snapToggleButton.Checked; };
+            snapToggleButton.ToolTipText = "Snap points to grid";
             toolStrip.Items.Add(snapToggleButton);
 
             gridToggleButton.CheckOnClick = true;
             gridToggleButton.Checked = showGrid;
-            gridToggleButton.CheckedChanged += (s, e) =>
+            gridToggleButton.CheckedChanged += delegate
             {
                 showGrid = gridToggleButton.Checked;
                 canvas.Invalidate();
             };
+            gridToggleButton.ToolTipText = "Show grid";
             toolStrip.Items.Add(gridToggleButton);
 
-            AddToolStripButton("Rename", (s, e) => RenameSelected());
-            AddToolStripButton("Delete", (s, e) => DeleteSelected());
-
             Controls.Add(toolStrip);
+        }
+
+        private void InitializePropertiesPanel()
+        {
+            propertiesPanel.Dock = DockStyle.Right;
+            propertiesPanel.Width = 290;
+            propertiesPanel.Padding = new Padding(12);
+            propertiesPanel.BackColor = Color.FromArgb(245, 245, 245);
+            Controls.Add(propertiesPanel);
+
+            var title = new Label();
+            title.Text = "Properties";
+            title.Font = new Font("Segoe UI", 12f, FontStyle.Bold);
+            title.AutoSize = true;
+            title.Location = new Point(12, 12);
+            propertiesPanel.Controls.Add(title);
+
+            var y = 48;
+            xBox = AddNumberField("X", ref y);
+            yBox = AddNumberField("Y", ref y);
+            widthBox = AddNumberField("Width", ref y);
+            heightBox = AddNumberField("Height", ref y);
+            lineWidthBox = AddNumberField("Line width", ref y);
+            lineWidthBox.Minimum = 1;
+            lineWidthBox.Maximum = 24;
+
+            var fontLabel = new Label();
+            fontLabel.Text = "Font";
+            fontLabel.AutoSize = true;
+            fontLabel.Location = new Point(12, y + 5);
+            propertiesPanel.Controls.Add(fontLabel);
+
+            fontCombo = new ComboBox();
+            fontCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+            fontCombo.Items.AddRange(new object[] { "Times New Roman", "Cambria", "Georgia" });
+            fontCombo.SelectedIndex = 0;
+            fontCombo.SetBounds(95, y, 175, 26);
+            fontCombo.SelectedIndexChanged += delegate
+            {
+                if (updatingProperties)
+                {
+                    return;
+                }
+                fontFamily = Convert.ToString(fontCombo.SelectedItem);
+                if (selectedItem != null && selectedItem.Type != "wire" && selectedItem.Type != "image")
+                {
+                    selectedItem.FontFamily = fontFamily;
+                    canvas.Invalidate();
+                }
+            };
+            propertiesPanel.Controls.Add(fontCombo);
+            y += 38;
+
+            fillPanelButton = AddPanelColorButton("Fill", ref y, "fill");
+            outlinePanelButton = AddPanelColorButton("Outline", ref y, "outline");
+            linePanelButton = AddPanelColorButton("Line", ref y, "line");
+            textPanelButton = AddPanelColorButton("Text", ref y, "text");
+            backgroundPanelButton = AddPanelColorButton("Background", ref y, "background");
+
+            var renameButton = new Button();
+            renameButton.Text = "Rename";
+            renameButton.SetBounds(12, y + 8, 126, 30);
+            renameButton.Click += delegate { RenameSelected(); };
+            propertiesPanel.Controls.Add(renameButton);
+
+            var deleteButton = new Button();
+            deleteButton.Text = "Delete";
+            deleteButton.SetBounds(144, y + 8, 126, 30);
+            deleteButton.Click += delegate { DeleteSelected(); };
+            propertiesPanel.Controls.Add(deleteButton);
+        }
+
+        private NumericUpDown AddNumberField(string label, ref int y)
+        {
+            var textLabel = new Label();
+            textLabel.Text = label;
+            textLabel.AutoSize = true;
+            textLabel.Location = new Point(12, y + 5);
+            propertiesPanel.Controls.Add(textLabel);
+
+            var number = new NumericUpDown();
+            number.DecimalPlaces = 0;
+            number.Minimum = -10000;
+            number.Maximum = 10000;
+            number.Increment = 1;
+            number.SetBounds(95, y, 175, 26);
+            number.ValueChanged += delegate
+            {
+                if (!updatingProperties)
+                {
+                    ApplyNumericProperties();
+                }
+            };
+            propertiesPanel.Controls.Add(number);
+            y += 34;
+            return number;
+        }
+
+        private Button AddPanelColorButton(string label, ref int y, string target)
+        {
+            var textLabel = new Label();
+            textLabel.Text = label;
+            textLabel.AutoSize = true;
+            textLabel.Location = new Point(12, y + 6);
+            propertiesPanel.Controls.Add(textLabel);
+
+            var button = new Button();
+            button.Text = "Choose";
+            button.SetBounds(95, y, 175, 28);
+            button.Click += delegate { PickColor(target); };
+            propertiesPanel.Controls.Add(button);
+            y += 34;
+            return button;
         }
 
         private void InitializeCanvas()
@@ -316,9 +627,8 @@ namespace AKDiagrams
             canvas.MouseMove += Canvas_MouseMove;
             canvas.MouseUp += Canvas_MouseUp;
             canvas.DoubleClick += Canvas_DoubleClick;
-            canvas.Resize += (s, e) => canvas.Invalidate();
+            canvas.Resize += delegate { canvas.Invalidate(); };
             Controls.Add(canvas);
-            canvas.BringToFront();
         }
 
         private void InitializeStatusBar()
@@ -335,48 +645,54 @@ namespace AKDiagrams
             {
                 DeleteSelected();
                 e.Handled = true;
-                return;
             }
-            if (e.Control && e.KeyCode == Keys.S)
+            else if (e.Control && e.KeyCode == Keys.S)
             {
                 SaveFile();
                 e.Handled = true;
-                return;
             }
-            if (e.Control && e.KeyCode == Keys.O)
+            else if (e.Control && e.KeyCode == Keys.O)
             {
                 OpenFile();
                 e.Handled = true;
-                return;
             }
-            if (e.Control && e.KeyCode == Keys.N)
+            else if (e.Control && e.KeyCode == Keys.N)
             {
                 NewFile();
                 e.Handled = true;
-                return;
             }
-            if (e.KeyCode == Keys.Escape)
+            else if (e.KeyCode == Keys.Enter && pendingWirePoints.Count >= 2)
             {
-                drawStart = null;
-                wireStart = null;
-                dragging = false;
-                canvas.Invalidate();
+                FinishPendingWire();
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.Escape)
+            {
+                CancelActiveGesture();
+                e.Handled = true;
             }
         }
 
-        private void AddToolStripButton(string text, EventHandler click)
+        private void AddToolStripButton(string text, EventHandler click, string tooltip)
         {
             var button = new ToolStripButton(text);
+            button.ToolTipText = tooltip;
             button.Click += click;
             toolStrip.Items.Add(button);
         }
 
         private void AddToolButton(string text, ToolKind kind)
         {
+            if (toolButtons.ContainsKey(kind))
+            {
+                return;
+            }
+
             var button = new ToolStripButton(text);
             button.CheckOnClick = true;
             button.Checked = kind == ToolKind.Select;
-            button.Click += (s, e) => SetTool(kind);
+            button.ToolTipText = text;
+            button.Click += delegate { SetTool(kind); };
             toolButtons[kind] = button;
             toolStrip.Items.Add(button);
         }
@@ -389,8 +705,9 @@ namespace AKDiagrams
                 pair.Value.Checked = pair.Key == kind;
             }
             drawStart = null;
-            wireStart = null;
-            dragging = false;
+            dragKind = DragKind.None;
+            resizeHandle = string.Empty;
+            activeWirePointIndex = -1;
             canvas.Cursor = kind == ToolKind.Select ? Cursors.Arrow : Cursors.Cross;
             SetStatus("Tool: " + kind);
             canvas.Invalidate();
@@ -401,70 +718,55 @@ namespace AKDiagrams
             statusLabel.Text = text;
         }
 
-        private void PickColor(string target)
+        private string CreateItemId()
         {
-            using (var dialog = new ColorDialog())
-            {
-                if (target == "fill") dialog.Color = fillColor;
-                if (target == "line") dialog.Color = lineColor;
-                if (target == "text") dialog.Color = textColor;
+            var id = "item-" + nextItemNumber.ToString("0000");
+            nextItemNumber++;
+            return id;
+        }
 
-                if (dialog.ShowDialog(this) != DialogResult.OK)
+        private DiagramItem FindById(string id)
+        {
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                return null;
+            }
+            foreach (var item in items)
+            {
+                if (item.Id == id)
                 {
-                    return;
+                    return item;
                 }
-
-                if (target == "fill") fillColor = dialog.Color;
-                if (target == "line") lineColor = dialog.Color;
-                if (target == "text") textColor = dialog.Color;
-                UpdateColorButtons();
-                SetStatus(target + " color updated");
             }
-        }
-
-        private void UpdateColorButtons()
-        {
-            fillColorButton.BackColor = fillColor;
-            lineColorButton.BackColor = lineColor;
-            textColorButton.BackColor = textColor;
-            fillColorButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
-            lineColorButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
-            textColorButton.DisplayStyle = ToolStripItemDisplayStyle.Text;
-        }
-
-        private PointF Snap(PointF point)
-        {
-            if (!snapToGrid)
-            {
-                return point;
-            }
-            return new PointF(
-                (float)Math.Round(point.X / gridSize) * gridSize,
-                (float)Math.Round(point.Y / gridSize) * gridSize
-            );
+            return null;
         }
 
         private void Canvas_MouseDown(object sender, MouseEventArgs e)
         {
+            canvas.Focus();
             var rawPoint = new PointF(e.X, e.Y);
             currentPointer = rawPoint;
             var point = Snap(rawPoint);
 
+            if (e.Button == MouseButtons.Right)
+            {
+                if (currentTool == ToolKind.Wire && pendingWirePoints.Count >= 2)
+                {
+                    FinishPendingWire();
+                }
+                return;
+            }
+
+            if (currentTool == ToolKind.ColorPicker)
+            {
+                var picked = PickCanvasColor(rawPoint);
+                ApplyPickedColor(picked);
+                return;
+            }
+
             if (currentTool == ToolKind.Select)
             {
-                selectedItem = FindItemAt(rawPoint);
-                dragging = selectedItem != null;
-                dragStart = rawPoint;
-                movedInDrag = false;
-                if (selectedItem == null)
-                {
-                    SetStatus("No selection");
-                }
-                else
-                {
-                    SetStatus("Selected " + selectedItem.Type);
-                }
-                canvas.Invalidate();
+                BeginSelectionDrag(rawPoint);
                 return;
             }
 
@@ -477,25 +779,7 @@ namespace AKDiagrams
 
             if (currentTool == ToolKind.Wire)
             {
-                if (wireStart == null)
-                {
-                    wireStart = point;
-                    SetStatus("Wire start set. Click end point.");
-                }
-                else
-                {
-                    var points = BuildOrthogonalPoints(wireStart.Value, point);
-                    items.Add(new DiagramItem
-                    {
-                        Type = "wire",
-                        Points = points.Select(FloatPoint.FromPointF).ToList(),
-                        LineColor = ColorTranslator.ToHtml(lineColor),
-                        LineWidth = lineWidth,
-                        Arrow = wireArrow
-                    });
-                    wireStart = null;
-                    SetStatus("Wire created");
-                }
+                AddPendingWirePoint(point);
                 canvas.Invalidate();
                 return;
             }
@@ -505,16 +789,14 @@ namespace AKDiagrams
                 var text = PromptDialog.Show("Enter text:", "Add Text");
                 if (!string.IsNullOrWhiteSpace(text))
                 {
-                    items.Add(new DiagramItem
-                    {
-                        Type = "text",
-                        Points = new List<FloatPoint> { FloatPoint.FromPointF(point) },
-                        Label = text,
-                        TextColor = ColorTranslator.ToHtml(textColor)
-                    });
-                    SetStatus("Text added");
-                    canvas.Invalidate();
+                    AddText(point, text);
                 }
+                return;
+            }
+
+            if (currentTool == ToolKind.Image)
+            {
+                InsertImageAt(point);
             }
         }
 
@@ -523,21 +805,42 @@ namespace AKDiagrams
             var rawPoint = new PointF(e.X, e.Y);
             currentPointer = rawPoint;
 
-            if (currentTool == ToolKind.Select && dragging && selectedItem != null)
+            if (dragKind != DragKind.None && selectedItem != null)
             {
-                var dx = rawPoint.X - dragStart.X;
-                var dy = rawPoint.Y - dragStart.Y;
-                if (Math.Abs(dx) > 0.01f || Math.Abs(dy) > 0.01f)
+                var snapped = Snap(rawPoint);
+                if (dragKind == DragKind.Move)
                 {
-                    MoveItem(selectedItem, dx, dy);
-                    dragStart = rawPoint;
+                    var dx = rawPoint.X - dragStart.X;
+                    var dy = rawPoint.Y - dragStart.Y;
+                    if (Math.Abs(dx) > 0.01f || Math.Abs(dy) > 0.01f)
+                    {
+                        MoveItem(selectedItem, dx, dy);
+                        dragStart = rawPoint;
+                        movedInDrag = true;
+                        UpdateConnectedWires(selectedItem);
+                        UpdatePropertiesPanel();
+                        canvas.Invalidate();
+                    }
+                }
+                else if (dragKind == DragKind.Resize)
+                {
+                    ResizeSelected(snapped);
                     movedInDrag = true;
+                    UpdateConnectedWires(selectedItem);
+                    UpdatePropertiesPanel();
+                    canvas.Invalidate();
+                }
+                else if (dragKind == DragKind.WirePoint)
+                {
+                    MoveWirePoint(selectedItem, activeWirePointIndex, snapped);
+                    movedInDrag = true;
+                    UpdatePropertiesPanel();
                     canvas.Invalidate();
                 }
                 return;
             }
 
-            if (drawStart != null || wireStart != null)
+            if (drawStart != null || pendingWirePoints.Count > 0)
             {
                 canvas.Invalidate();
             }
@@ -547,64 +850,318 @@ namespace AKDiagrams
         {
             var point = Snap(new PointF(e.X, e.Y));
 
-            if (currentTool == ToolKind.Select)
+            if ((currentTool == ToolKind.Block || currentTool == ToolKind.Device) && drawStart != null)
             {
-                if (dragging && movedInDrag)
+                var rect = NormalizeRect(drawStart.Value, point);
+                drawStart = null;
+                if (rect.Width >= 14f && rect.Height >= 14f)
                 {
-                    SetStatus("Moved selected object");
+                    AddShape(currentTool == ToolKind.Block ? "rect" : "ellipse", rect);
                 }
-                dragging = false;
-                movedInDrag = false;
+                canvas.Invalidate();
                 return;
             }
 
-            if ((currentTool == ToolKind.Block || currentTool == ToolKind.Device) && drawStart != null)
+            if (dragKind == DragKind.WirePoint && selectedItem != null && selectedItem.Type == "wire")
             {
-                var start = drawStart.Value;
-                drawStart = null;
-                var rect = NormalizeRect(start, point);
-                if (rect.Width < 14f || rect.Height < 14f)
-                {
-                    SetStatus("Shape too small");
-                    canvas.Invalidate();
-                    return;
-                }
-                var type = currentTool == ToolKind.Block ? "rect" : "ellipse";
-                var label = currentTool == ToolKind.Block ? "Component" : "Device";
-                items.Add(new DiagramItem
-                {
-                    Type = type,
-                    Points = new List<FloatPoint>
-                    {
-                        new FloatPoint(rect.Left, rect.Top),
-                        new FloatPoint(rect.Right, rect.Bottom)
-                    },
-                    Label = label,
-                    FillColor = ColorTranslator.ToHtml(fillColor),
-                    LineColor = ColorTranslator.ToHtml(lineColor),
-                    TextColor = ColorTranslator.ToHtml(textColor),
-                    LineWidth = lineWidth
-                });
-                SetStatus((type == "rect" ? "Block" : "Device") + " created");
-                canvas.Invalidate();
+                TryReconnectDraggedWireTip(point);
             }
+
+            if (dragKind != DragKind.None && movedInDrag)
+            {
+                SetStatus("Updated selection");
+            }
+
+            dragKind = DragKind.None;
+            resizeHandle = string.Empty;
+            activeWirePointIndex = -1;
+            movedInDrag = false;
         }
 
         private void Canvas_DoubleClick(object sender, EventArgs e)
         {
-            if (currentTool != ToolKind.Select || selectedItem == null)
+            var point = Snap(canvas.PointToClient(Cursor.Position));
+            if (currentTool == ToolKind.Wire && pendingWirePoints.Count >= 2)
+            {
+                FinishPendingWire();
+                return;
+            }
+
+            if (currentTool != ToolKind.Select)
             {
                 return;
             }
-            RenameSelected();
+
+            if (selectedItem != null && selectedItem.Type == "wire")
+            {
+                if (InsertWireTurnAt(selectedItem, point))
+                {
+                    SetStatus("Wire turn added");
+                    canvas.Invalidate();
+                    return;
+                }
+            }
+
+            var hit = FindItemAt(point);
+            if (hit != null)
+            {
+                selectedItem = hit;
+                RenameSelected();
+            }
+        }
+
+        private void BeginSelectionDrag(PointF rawPoint)
+        {
+            if (selectedItem != null)
+            {
+                var handle = HitHandle(selectedItem, rawPoint);
+                if (handle != null)
+                {
+                    if (selectedItem.Type == "wire")
+                    {
+                        activeWirePointIndex = handle.Index;
+                        DetachWirePoint(selectedItem, activeWirePointIndex);
+                        dragKind = DragKind.WirePoint;
+                    }
+                    else
+                    {
+                        resizeHandle = handle.Name;
+                        dragKind = DragKind.Resize;
+                    }
+                    dragStart = rawPoint;
+                    movedInDrag = false;
+                    return;
+                }
+            }
+
+            selectedItem = FindItemAt(rawPoint);
+            UpdatePropertiesPanel();
+            if (selectedItem == null)
+            {
+                dragKind = DragKind.None;
+                SetStatus("No selection");
+            }
+            else
+            {
+                dragKind = DragKind.Move;
+                dragStart = rawPoint;
+                movedInDrag = false;
+                SetStatus("Selected " + selectedItem.Type);
+            }
+            canvas.Invalidate();
+        }
+
+        private void AddShape(string type, RectangleF rect)
+        {
+            var item = new DiagramItem();
+            item.Id = CreateItemId();
+            item.Type = type;
+            item.Category = "Core";
+            item.Bounds = FloatRect.FromRectangleF(rect);
+            item.Label = type == "rect" ? "Component" : "Device";
+            item.FillColor = ColorTranslator.ToHtml(fillColor);
+            item.OutlineColor = ColorTranslator.ToHtml(outlineColor);
+            item.TextColor = ColorTranslator.ToHtml(textColor);
+            item.LineWidth = lineWidth;
+            item.FontFamily = fontFamily;
+            items.Add(item);
+            selectedItem = item;
+            UpdatePropertiesPanel();
+            SetStatus((type == "rect" ? "Block" : "Device") + " added");
+        }
+
+        private void AddText(PointF point, string text)
+        {
+            var item = new DiagramItem();
+            item.Id = CreateItemId();
+            item.Type = "text";
+            item.Category = "Annotation";
+            item.Points.Add(FloatPoint.FromPointF(point));
+            item.Label = text;
+            item.TextColor = ColorTranslator.ToHtml(textColor);
+            item.FontFamily = fontFamily;
+            items.Add(item);
+            selectedItem = item;
+            UpdatePropertiesPanel();
+            SetStatus("Text added");
+            canvas.Invalidate();
+        }
+
+        private void AddPendingWirePoint(PointF point)
+        {
+            var connection = CreateConnectionAt(point);
+            var actualPoint = point;
+            if (connection != null)
+            {
+                actualPoint = GetConnectionPoint(connection);
+            }
+
+            if (pendingWirePoints.Count == 0)
+            {
+                pendingStartConnection = connection;
+                pendingWirePoints.Add(FloatPoint.FromPointF(actualPoint));
+                SetStatus("Wire started");
+                return;
+            }
+
+            var lastPoint = pendingWirePoints[pendingWirePoints.Count - 1].ToPointF();
+            if (Distance(lastPoint, actualPoint) < 2f)
+            {
+                return;
+            }
+
+            pendingWirePoints.Add(FloatPoint.FromPointF(actualPoint));
+            SetStatus("Wire point added");
+        }
+
+        private void FinishPendingWire()
+        {
+            if (pendingWirePoints.Count < 2)
+            {
+                CancelPendingWire();
+                return;
+            }
+
+            var item = new DiagramItem();
+            item.Id = CreateItemId();
+            item.Type = "wire";
+            item.Category = "Core";
+            item.Points = ClonePoints(pendingWirePoints);
+            item.LineColor = ColorTranslator.ToHtml(lineColor);
+            item.LineWidth = lineWidth;
+            item.Arrow = wireArrow;
+            item.StartConnection = pendingStartConnection;
+            item.EndConnection = CreateConnectionAt(item.Points[item.Points.Count - 1].ToPointF());
+            if (item.EndConnection != null)
+            {
+                item.Points[item.Points.Count - 1] = FloatPoint.FromPointF(GetConnectionPoint(item.EndConnection));
+            }
+
+            items.Add(item);
+            selectedItem = item;
+            pendingWirePoints.Clear();
+            pendingStartConnection = null;
+            UpdatePropertiesPanel();
+            SetStatus("Wire added");
+            canvas.Invalidate();
+        }
+
+        private void CancelPendingWire()
+        {
+            pendingWirePoints.Clear();
+            pendingStartConnection = null;
+            canvas.Invalidate();
+            SetStatus("Wire canceled");
+        }
+
+        private void InsertImageAtCenter()
+        {
+            InsertImageAt(new PointF(canvas.Width / 2f, canvas.Height / 2f));
+        }
+
+        private void InsertImageAt(PointF point)
+        {
+            using (var dialog = new OpenFileDialog())
+            {
+                dialog.Filter = "Images (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|All files (*.*)|*.*";
+                dialog.Title = "Insert image";
+                ConfigureDialogInitialDirectory(dialog);
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    return;
+                }
+
+                try
+                {
+                    var bytes = File.ReadAllBytes(dialog.FileName);
+                    Image image;
+                    using (var stream = new MemoryStream(bytes))
+                    {
+                        using (var loadedImage = Image.FromStream(stream))
+                        {
+                            image = new Bitmap(loadedImage);
+                        }
+                    }
+
+                    var maxWidth = 360f;
+                    var maxHeight = 260f;
+                    var width = (float)image.Width;
+                    var height = (float)image.Height;
+                    var scale = Math.Min(1f, Math.Min(maxWidth / width, maxHeight / height));
+                    width *= scale;
+                    height *= scale;
+
+                    var item = new DiagramItem();
+                    item.Id = CreateItemId();
+                    item.Type = "image";
+                    item.Category = "Reference";
+                    item.Bounds = new FloatRect(point.X - width / 2f, point.Y - height / 2f, width, height);
+                    item.SourceFileName = Path.GetFileName(dialog.FileName);
+                    item.ImageExtension = NormalizeImageExtension(Path.GetExtension(dialog.FileName));
+                    item.ImageDataBase64 = Convert.ToBase64String(bytes);
+                    item.LineColor = ColorTranslator.ToHtml(outlineColor);
+                    item.LineWidth = 1f;
+                    items.Add(item);
+                    imageCache[item.Id] = image;
+                    selectedItem = item;
+                    UpdatePropertiesPanel();
+                    SetStatus("Image added");
+                    canvas.Invalidate();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, "Could not insert image:\n" + ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private string NormalizeImageExtension(string extension)
+        {
+            var value = extension.Replace(".", "").ToLowerInvariant();
+            if (value == "jpg")
+            {
+                return "jpeg";
+            }
+            if (value == "bmp")
+            {
+                return "bmp";
+            }
+            if (value == "jpeg")
+            {
+                return "jpeg";
+            }
+            return "png";
+        }
+
+        private List<FloatPoint> ClonePoints(List<FloatPoint> source)
+        {
+            var clone = new List<FloatPoint>();
+            foreach (var point in source)
+            {
+                clone.Add(new FloatPoint(point.X, point.Y));
+            }
+            return clone;
         }
 
         private void Canvas_Paint(object sender, PaintEventArgs e)
         {
-            var graphics = e.Graphics;
-            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            RenderDiagram(e.Graphics, canvas.ClientSize, true, 1f);
+        }
 
-            if (showGrid)
+        private void RenderDiagram(Graphics graphics, Size size, bool includeEditorUi, float scale)
+        {
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            graphics.ScaleTransform(scale, scale);
+
+            using (var backgroundBrush = new SolidBrush(backgroundColor))
+            {
+                graphics.FillRectangle(backgroundBrush, 0, 0, size.Width, size.Height);
+            }
+
+            if (includeEditorUi && showGrid)
             {
                 DrawGrid(graphics);
             }
@@ -614,13 +1171,16 @@ namespace AKDiagrams
                 DrawItem(graphics, item);
             }
 
-            DrawPreview(graphics);
-            DrawSelection(graphics);
+            if (includeEditorUi)
+            {
+                DrawPreview(graphics);
+                DrawSelection(graphics);
+            }
         }
 
         private void DrawGrid(Graphics graphics)
         {
-            using (var pen = new Pen(Color.FromArgb(232, 232, 232), 1f))
+            using (var pen = new Pen(Color.FromArgb(230, 230, 230), 1f))
             {
                 for (var x = 0; x <= canvas.Width; x += gridSize)
                 {
@@ -635,58 +1195,64 @@ namespace AKDiagrams
 
         private void DrawItem(Graphics graphics, DiagramItem item)
         {
-            if (item.Type == "rect" && item.Points.Count >= 2)
+            if (item.Type == "rect")
             {
-                DrawRect(graphics, item);
-                return;
+                DrawShape(graphics, item, false);
             }
-            if (item.Type == "ellipse" && item.Points.Count >= 2)
+            else if (item.Type == "ellipse")
             {
-                DrawEllipse(graphics, item);
-                return;
+                DrawShape(graphics, item, true);
             }
-            if (item.Type == "wire" && item.Points.Count >= 2)
+            else if (item.Type == "wire")
             {
                 DrawWire(graphics, item);
-                return;
             }
-            if (item.Type == "text" && item.Points.Count >= 1)
+            else if (item.Type == "text")
             {
                 DrawText(graphics, item);
             }
-        }
-
-        private void DrawRect(Graphics graphics, DiagramItem item)
-        {
-            var rect = GetRect(item);
-            using (var brush = new SolidBrush(ParseColor(item.FillColor, Color.White)))
-            using (var pen = new Pen(ParseColor(item.LineColor, Color.Black), item.LineWidth))
-            using (var textBrush = new SolidBrush(ParseColor(item.TextColor, Color.Black)))
-            using (var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            else if (item.Type == "image")
             {
-                graphics.FillRectangle(brush, rect);
-                graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
-                graphics.DrawString(item.Label ?? string.Empty, new Font("Times New Roman", 15f, FontStyle.Bold), textBrush, rect, format);
+                DrawImage(graphics, item);
             }
         }
 
-        private void DrawEllipse(Graphics graphics, DiagramItem item)
+        private void DrawShape(Graphics graphics, DiagramItem item, bool ellipse)
         {
-            var rect = GetRect(item);
+            var rect = item.Bounds.ToRectangleF();
             using (var brush = new SolidBrush(ParseColor(item.FillColor, Color.White)))
-            using (var pen = new Pen(ParseColor(item.LineColor, Color.Black), item.LineWidth))
+            using (var pen = new Pen(ParseColor(item.OutlineColor, Color.Black), item.LineWidth))
             using (var textBrush = new SolidBrush(ParseColor(item.TextColor, Color.Black)))
-            using (var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            using (var font = CreateFont(item.FontFamily, 15f, FontStyle.Bold))
+            using (var format = new StringFormat())
             {
-                graphics.FillEllipse(brush, rect);
-                graphics.DrawEllipse(pen, rect);
-                graphics.DrawString(item.Label ?? string.Empty, new Font("Times New Roman", 15f, FontStyle.Bold), textBrush, rect, format);
+                format.Alignment = StringAlignment.Center;
+                format.LineAlignment = StringAlignment.Center;
+
+                if (ellipse)
+                {
+                    graphics.FillEllipse(brush, rect);
+                    graphics.DrawEllipse(pen, rect);
+                }
+                else
+                {
+                    graphics.FillRectangle(brush, rect);
+                    graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
+                }
+
+                graphics.DrawString(item.Label ?? string.Empty, font, textBrush, rect, format);
             }
         }
 
         private void DrawWire(Graphics graphics, DiagramItem item)
         {
-            var points = item.Points.Select(point => point.ToPointF()).ToArray();
+            if (item.Points.Count < 2)
+            {
+                return;
+            }
+
+            UpdateWireConnectionPoints(item);
+            var points = item.Points.Select(p => p.ToPointF()).ToArray();
             using (var pen = new Pen(ParseColor(item.LineColor, Color.Black), item.LineWidth))
             {
                 pen.StartCap = LineCap.Round;
@@ -702,12 +1268,35 @@ namespace AKDiagrams
 
         private void DrawText(Graphics graphics, DiagramItem item)
         {
-            var point = item.Points[0].ToPointF();
-            var text = item.Label ?? string.Empty;
-            using (var brush = new SolidBrush(ParseColor(item.TextColor, Color.Black)))
-            using (var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            if (item.Points.Count == 0)
             {
-                graphics.DrawString(text, new Font("Times New Roman", 15f, FontStyle.Regular), brush, point, format);
+                return;
+            }
+
+            var point = item.Points[0].ToPointF();
+            using (var brush = new SolidBrush(ParseColor(item.TextColor, Color.Black)))
+            using (var font = CreateFont(item.FontFamily, 15f, FontStyle.Regular))
+            using (var format = new StringFormat())
+            {
+                format.Alignment = StringAlignment.Center;
+                format.LineAlignment = StringAlignment.Center;
+                graphics.DrawString(item.Label ?? string.Empty, font, brush, point, format);
+            }
+        }
+
+        private void DrawImage(Graphics graphics, DiagramItem item)
+        {
+            var image = GetImage(item);
+            if (image == null)
+            {
+                return;
+            }
+
+            var rect = item.Bounds.ToRectangleF();
+            graphics.DrawImage(image, rect);
+            using (var pen = new Pen(ParseColor(item.LineColor, Color.Gray), Math.Max(1f, item.LineWidth)))
+            {
+                graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
             }
         }
 
@@ -721,22 +1310,21 @@ namespace AKDiagrams
                 {
                     var rect = NormalizeRect(drawStart.Value, snappedPointer);
                     graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
-                    return;
                 }
-                if (currentTool == ToolKind.Device && drawStart != null)
+                else if (currentTool == ToolKind.Device && drawStart != null)
                 {
                     var rect = NormalizeRect(drawStart.Value, snappedPointer);
                     graphics.DrawEllipse(pen, rect);
-                    return;
                 }
-                if (currentTool == ToolKind.Wire && wireStart != null)
+                else if (currentTool == ToolKind.Wire && pendingWirePoints.Count > 0)
                 {
-                    var points = BuildOrthogonalPoints(wireStart.Value, snappedPointer).ToArray();
+                    var points = ClonePoints(pendingWirePoints);
+                    points.Add(FloatPoint.FromPointF(snappedPointer));
                     if (wireArrow)
                     {
                         pen.CustomEndCap = new AdjustableArrowCap(4f, 6f, true);
                     }
-                    graphics.DrawLines(pen, points);
+                    graphics.DrawLines(pen, points.Select(p => p.ToPointF()).ToArray());
                 }
             }
         }
@@ -747,53 +1335,594 @@ namespace AKDiagrams
             {
                 return;
             }
+
+            if (selectedItem.Type == "wire")
+            {
+                DrawWireHandles(graphics, selectedItem);
+                return;
+            }
+
             var rect = GetBounds(selectedItem);
-            rect.Inflate(6f, 6f);
-            using (var pen = new Pen(Color.FromArgb(53, 118, 216), 2f))
+            rect.Inflate(5f, 5f);
+            using (var pen = new Pen(Color.FromArgb(42, 115, 217), 2f))
             {
                 pen.DashStyle = DashStyle.Dash;
                 graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
             }
-        }
 
-        private RectangleF GetRect(DiagramItem item)
-        {
-            return NormalizeRect(item.Points[0].ToPointF(), item.Points[1].ToPointF());
-        }
-
-        private RectangleF GetBounds(DiagramItem item)
-        {
-            if (item.Type == "rect" || item.Type == "ellipse")
+            foreach (var handle in GetResizeHandles(rect))
             {
-                return GetRect(item);
+                using (var brush = new SolidBrush(Color.White))
+                using (var pen = new Pen(Color.FromArgb(42, 115, 217), 1f))
+                {
+                    graphics.FillRectangle(brush, handle.Value);
+                    graphics.DrawRectangle(pen, handle.Value.X, handle.Value.Y, handle.Value.Width, handle.Value.Height);
+                }
             }
+        }
+
+        private void DrawWireHandles(Graphics graphics, DiagramItem wire)
+        {
+            for (var i = 0; i < wire.Points.Count; i++)
+            {
+                var point = wire.Points[i].ToPointF();
+                var connected = (i == 0 && wire.StartConnection != null) || (i == wire.Points.Count - 1 && wire.EndConnection != null);
+                var fill = connected ? Color.FromArgb(0, 150, 90) : Color.White;
+                var rect = new RectangleF(point.X - 5f, point.Y - 5f, 10f, 10f);
+                using (var brush = new SolidBrush(fill))
+                using (var pen = new Pen(Color.FromArgb(42, 115, 217), 1.5f))
+                {
+                    graphics.FillEllipse(brush, rect);
+                    graphics.DrawEllipse(pen, rect);
+                }
+            }
+        }
+
+        private Font CreateFont(string family, float size, FontStyle style)
+        {
+            try
+            {
+                return new Font(string.IsNullOrWhiteSpace(family) ? "Times New Roman" : family, size, style);
+            }
+            catch
+            {
+                return new Font("Times New Roman", size, style);
+            }
+        }
+
+        private Image GetImage(DiagramItem item)
+        {
+            if (imageCache.ContainsKey(item.Id))
+            {
+                return imageCache[item.Id];
+            }
+            if (string.IsNullOrWhiteSpace(item.ImageDataBase64))
+            {
+                return null;
+            }
+
+            try
+            {
+                var bytes = Convert.FromBase64String(item.ImageDataBase64);
+                using (var stream = new MemoryStream(bytes))
+                {
+                    Image image;
+                    using (var loadedImage = Image.FromStream(stream))
+                    {
+                        image = new Bitmap(loadedImage);
+                    }
+                    imageCache[item.Id] = image;
+                    return image;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private Dictionary<string, RectangleF> GetResizeHandles(RectangleF rect)
+        {
+            var size = 8f;
+            var half = size / 2f;
+            var handles = new Dictionary<string, RectangleF>();
+            handles["NW"] = new RectangleF(rect.Left - half, rect.Top - half, size, size);
+            handles["N"] = new RectangleF(rect.Left + rect.Width / 2f - half, rect.Top - half, size, size);
+            handles["NE"] = new RectangleF(rect.Right - half, rect.Top - half, size, size);
+            handles["E"] = new RectangleF(rect.Right - half, rect.Top + rect.Height / 2f - half, size, size);
+            handles["SE"] = new RectangleF(rect.Right - half, rect.Bottom - half, size, size);
+            handles["S"] = new RectangleF(rect.Left + rect.Width / 2f - half, rect.Bottom - half, size, size);
+            handles["SW"] = new RectangleF(rect.Left - half, rect.Bottom - half, size, size);
+            handles["W"] = new RectangleF(rect.Left - half, rect.Top + rect.Height / 2f - half, size, size);
+            return handles;
+        }
+
+        private HandleHit HitHandle(DiagramItem item, PointF point)
+        {
             if (item.Type == "wire")
             {
-                var points = item.Points.Select(point => point.ToPointF()).ToList();
-                var minX = points.Min(point => point.X);
-                var maxX = points.Max(point => point.X);
-                var minY = points.Min(point => point.Y);
-                var maxY = points.Max(point => point.Y);
-                var pad = Math.Max(6f, item.LineWidth + 2f);
-                return new RectangleF(minX - pad, minY - pad, (maxX - minX) + 2f * pad, (maxY - minY) + 2f * pad);
+                for (var i = 0; i < item.Points.Count; i++)
+                {
+                    if (Distance(item.Points[i].ToPointF(), point) <= 8f)
+                    {
+                        return new HandleHit("WIRE", i);
+                    }
+                }
+                return null;
             }
-            if (item.Type == "text")
+
+            if (!HasResizableBounds(item))
             {
-                var center = item.Points[0].ToPointF();
-                var width = Math.Max(40f, (item.Label ?? string.Empty).Length * 9f);
-                return new RectangleF(center.X - width / 2f, center.Y - 14f, width, 28f);
+                return null;
             }
-            return new RectangleF();
+
+            var rect = GetBounds(item);
+            rect.Inflate(5f, 5f);
+            foreach (var handle in GetResizeHandles(rect))
+            {
+                if (handle.Value.Contains(point))
+                {
+                    return new HandleHit(handle.Key, -1);
+                }
+            }
+            return null;
         }
 
         private void MoveItem(DiagramItem item, float dx, float dy)
         {
-            for (var i = 0; i < item.Points.Count; i++)
+            if (item.Type == "rect" || item.Type == "ellipse" || item.Type == "image")
             {
-                var point = item.Points[i];
-                point.X += dx;
-                point.Y += dy;
+                item.Bounds.X += dx;
+                item.Bounds.Y += dy;
             }
+            else if (item.Type == "text" || item.Type == "wire")
+            {
+                if (item.Type == "wire")
+                {
+                    item.StartConnection = null;
+                    item.EndConnection = null;
+                }
+                foreach (var point in item.Points)
+                {
+                    point.X += dx;
+                    point.Y += dy;
+                }
+            }
+        }
+
+        private void ResizeSelected(PointF point)
+        {
+            if (selectedItem == null || !HasResizableBounds(selectedItem))
+            {
+                return;
+            }
+
+            var rect = selectedItem.Bounds.ToRectangleF();
+            var left = rect.Left;
+            var top = rect.Top;
+            var right = rect.Right;
+            var bottom = rect.Bottom;
+
+            if (resizeHandle.Contains("W")) left = Math.Min(point.X, right - 20f);
+            if (resizeHandle.Contains("E")) right = Math.Max(point.X, left + 20f);
+            if (resizeHandle.Contains("N")) top = Math.Min(point.Y, bottom - 20f);
+            if (resizeHandle.Contains("S")) bottom = Math.Max(point.Y, top + 20f);
+
+            selectedItem.Bounds = new FloatRect(left, top, right - left, bottom - top);
+        }
+
+        private void MoveWirePoint(DiagramItem wire, int index, PointF point)
+        {
+            if (wire == null || wire.Type != "wire" || index < 0 || index >= wire.Points.Count)
+            {
+                return;
+            }
+            wire.Points[index] = FloatPoint.FromPointF(point);
+        }
+
+        private void DetachWirePoint(DiagramItem wire, int index)
+        {
+            if (wire == null || wire.Type != "wire")
+            {
+                return;
+            }
+            if (index == 0)
+            {
+                wire.StartConnection = null;
+            }
+            else if (index == wire.Points.Count - 1)
+            {
+                wire.EndConnection = null;
+            }
+        }
+
+        private void TryReconnectDraggedWireTip(PointF point)
+        {
+            if (selectedItem == null || selectedItem.Type != "wire")
+            {
+                return;
+            }
+            if (activeWirePointIndex != 0 && activeWirePointIndex != selectedItem.Points.Count - 1)
+            {
+                return;
+            }
+
+            var connection = CreateConnectionAt(point);
+            if (connection == null)
+            {
+                return;
+            }
+
+            var connectionPoint = GetConnectionPoint(connection);
+            selectedItem.Points[activeWirePointIndex] = FloatPoint.FromPointF(connectionPoint);
+            if (activeWirePointIndex == 0)
+            {
+                selectedItem.StartConnection = connection;
+            }
+            else
+            {
+                selectedItem.EndConnection = connection;
+            }
+            SetStatus("Wire reconnected");
+        }
+
+        private bool InsertWireTurnAt(DiagramItem wire, PointF point)
+        {
+            if (wire == null || wire.Type != "wire" || wire.Points.Count < 2)
+            {
+                return false;
+            }
+
+            var bestIndex = -1;
+            var bestDistance = float.MaxValue;
+            for (var i = 0; i < wire.Points.Count - 1; i++)
+            {
+                var distance = DistanceToSegment(point, wire.Points[i].ToPointF(), wire.Points[i + 1].ToPointF());
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    bestIndex = i;
+                }
+            }
+
+            if (bestIndex >= 0 && bestDistance <= 12f)
+            {
+                wire.Points.Insert(bestIndex + 1, FloatPoint.FromPointF(point));
+                return true;
+            }
+            return false;
+        }
+
+        private void UpdateConnectedWires(DiagramItem movedItem)
+        {
+            if (movedItem == null)
+            {
+                return;
+            }
+
+            foreach (var wire in items)
+            {
+                if (wire.Type != "wire")
+                {
+                    continue;
+                }
+                if (wire.StartConnection != null && wire.StartConnection.ElementId == movedItem.Id && wire.Points.Count > 0)
+                {
+                    wire.Points[0] = FloatPoint.FromPointF(GetConnectionPoint(wire.StartConnection));
+                }
+                if (wire.EndConnection != null && wire.EndConnection.ElementId == movedItem.Id && wire.Points.Count > 0)
+                {
+                    wire.Points[wire.Points.Count - 1] = FloatPoint.FromPointF(GetConnectionPoint(wire.EndConnection));
+                }
+            }
+        }
+
+        private void UpdateWireConnectionPoints(DiagramItem wire)
+        {
+            if (wire == null || wire.Type != "wire" || wire.Points.Count == 0)
+            {
+                return;
+            }
+            if (wire.StartConnection != null)
+            {
+                wire.Points[0] = FloatPoint.FromPointF(GetConnectionPoint(wire.StartConnection));
+            }
+            if (wire.EndConnection != null)
+            {
+                wire.Points[wire.Points.Count - 1] = FloatPoint.FromPointF(GetConnectionPoint(wire.EndConnection));
+            }
+        }
+
+        private WireConnection CreateConnectionAt(PointF point)
+        {
+            var item = FindConnectableAt(point);
+            if (item == null)
+            {
+                return null;
+            }
+
+            var rect = item.Bounds.ToRectangleF();
+            if (rect.Width <= 0f || rect.Height <= 0f)
+            {
+                return null;
+            }
+
+            var anchorPoint = ClosestPointOnRect(rect, point);
+            var anchorX = (anchorPoint.X - rect.X) / rect.Width;
+            var anchorY = (anchorPoint.Y - rect.Y) / rect.Height;
+            return new WireConnection(item.Id, anchorX, anchorY);
+        }
+
+        private PointF GetConnectionPoint(WireConnection connection)
+        {
+            var item = FindById(connection.ElementId);
+            if (item == null || !HasResizableBounds(item))
+            {
+                return PointF.Empty;
+            }
+            var rect = item.Bounds.ToRectangleF();
+            return new PointF(rect.X + rect.Width * connection.AnchorX, rect.Y + rect.Height * connection.AnchorY);
+        }
+
+        private DiagramItem FindConnectableAt(PointF point)
+        {
+            for (var i = items.Count - 1; i >= 0; i--)
+            {
+                var item = items[i];
+                if (item.Type == "rect" || item.Type == "ellipse" || item.Type == "image")
+                {
+                    var rect = item.Bounds.ToRectangleF();
+                    rect.Inflate(10f, 10f);
+                    if (rect.Contains(point))
+                    {
+                        return item;
+                    }
+                }
+            }
+            return null;
+        }
+
+        private PointF ClosestPointOnRect(RectangleF rect, PointF point)
+        {
+            var left = Math.Abs(point.X - rect.Left);
+            var right = Math.Abs(point.X - rect.Right);
+            var top = Math.Abs(point.Y - rect.Top);
+            var bottom = Math.Abs(point.Y - rect.Bottom);
+            var min = Math.Min(Math.Min(left, right), Math.Min(top, bottom));
+            var x = Clamp(point.X, rect.Left, rect.Right);
+            var y = Clamp(point.Y, rect.Top, rect.Bottom);
+
+            if (min == left) x = rect.Left;
+            else if (min == right) x = rect.Right;
+            else if (min == top) y = rect.Top;
+            else y = rect.Bottom;
+
+            return new PointF(x, y);
+        }
+
+        private void ApplyNumericProperties()
+        {
+            if (selectedItem == null)
+            {
+                lineWidth = (float)lineWidthBox.Value;
+                return;
+            }
+
+            if (selectedItem.Type == "rect" || selectedItem.Type == "ellipse" || selectedItem.Type == "image")
+            {
+                selectedItem.Bounds.X = (float)xBox.Value;
+                selectedItem.Bounds.Y = (float)yBox.Value;
+                selectedItem.Bounds.Width = Math.Max(20f, (float)widthBox.Value);
+                selectedItem.Bounds.Height = Math.Max(20f, (float)heightBox.Value);
+                selectedItem.LineWidth = Math.Max(1f, (float)lineWidthBox.Value);
+                UpdateConnectedWires(selectedItem);
+            }
+            else if (selectedItem.Type == "text" && selectedItem.Points.Count > 0)
+            {
+                selectedItem.Points[0].X = (float)xBox.Value;
+                selectedItem.Points[0].Y = (float)yBox.Value;
+            }
+            else if (selectedItem.Type == "wire")
+            {
+                selectedItem.LineWidth = Math.Max(1f, (float)lineWidthBox.Value);
+            }
+
+            lineWidth = Math.Max(1f, (float)lineWidthBox.Value);
+            canvas.Invalidate();
+        }
+
+        private void UpdatePropertiesPanel()
+        {
+            if (xBox == null)
+            {
+                return;
+            }
+
+            updatingProperties = true;
+
+            var hasSelection = selectedItem != null;
+            xBox.Enabled = hasSelection;
+            yBox.Enabled = hasSelection;
+            widthBox.Enabled = hasSelection && HasResizableBounds(selectedItem);
+            heightBox.Enabled = hasSelection && HasResizableBounds(selectedItem);
+            lineWidthBox.Enabled = true;
+            fontCombo.Enabled = hasSelection && selectedItem.Type != "wire" && selectedItem.Type != "image";
+
+            if (!hasSelection)
+            {
+                lineWidthBox.Value = ToNumeric(lineWidth);
+                fontCombo.SelectedItem = fontFamily;
+                updatingProperties = false;
+                return;
+            }
+
+            if (selectedItem.Type == "rect" || selectedItem.Type == "ellipse" || selectedItem.Type == "image")
+            {
+                xBox.Value = ToNumeric(selectedItem.Bounds.X);
+                yBox.Value = ToNumeric(selectedItem.Bounds.Y);
+                widthBox.Value = ToNumeric(selectedItem.Bounds.Width);
+                heightBox.Value = ToNumeric(selectedItem.Bounds.Height);
+                lineWidthBox.Value = ToNumeric(Math.Max(1f, selectedItem.LineWidth));
+            }
+            else if (selectedItem.Type == "text" && selectedItem.Points.Count > 0)
+            {
+                xBox.Value = ToNumeric(selectedItem.Points[0].X);
+                yBox.Value = ToNumeric(selectedItem.Points[0].Y);
+                widthBox.Value = 0;
+                heightBox.Value = 0;
+            }
+            else if (selectedItem.Type == "wire")
+            {
+                var bounds = GetBounds(selectedItem);
+                xBox.Value = ToNumeric(bounds.X);
+                yBox.Value = ToNumeric(bounds.Y);
+                widthBox.Value = ToNumeric(bounds.Width);
+                heightBox.Value = ToNumeric(bounds.Height);
+                lineWidthBox.Value = ToNumeric(Math.Max(1f, selectedItem.LineWidth));
+            }
+
+            if (!string.IsNullOrWhiteSpace(selectedItem.FontFamily) && fontCombo.Items.Contains(selectedItem.FontFamily))
+            {
+                fontCombo.SelectedItem = selectedItem.FontFamily;
+            }
+
+            updatingProperties = false;
+        }
+
+        private decimal ToNumeric(float value)
+        {
+            var clamped = Clamp(value, -10000f, 10000f);
+            return Convert.ToDecimal(Math.Round(clamped));
+        }
+
+        private void PickColor(string target)
+        {
+            var current = fillColor;
+            if (target == "outline") current = outlineColor;
+            else if (target == "line") current = lineColor;
+            else if (target == "text") current = textColor;
+            else if (target == "background") current = backgroundColor;
+
+            using (var dialog = new ColorDialog())
+            {
+                dialog.FullOpen = true;
+                dialog.Color = current;
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    return;
+                }
+                SetColor(target, dialog.Color, true);
+            }
+        }
+
+        private void SetColor(string target, Color color, bool applyToSelection)
+        {
+            if (target == "fill") fillColor = color;
+            else if (target == "outline") outlineColor = color;
+            else if (target == "line") lineColor = color;
+            else if (target == "text") textColor = color;
+            else if (target == "background") backgroundColor = color;
+
+            if (applyToSelection && selectedItem != null)
+            {
+                var html = ColorTranslator.ToHtml(color);
+                if (target == "fill" && (selectedItem.Type == "rect" || selectedItem.Type == "ellipse"))
+                {
+                    selectedItem.FillColor = html;
+                }
+                else if (target == "outline" && (selectedItem.Type == "rect" || selectedItem.Type == "ellipse"))
+                {
+                    selectedItem.OutlineColor = html;
+                }
+                else if (target == "line" && selectedItem.Type == "wire")
+                {
+                    selectedItem.LineColor = html;
+                }
+                else if (target == "line" && selectedItem.Type == "image")
+                {
+                    selectedItem.LineColor = html;
+                }
+                else if (target == "text" && selectedItem.Type != "wire" && selectedItem.Type != "image")
+                {
+                    selectedItem.TextColor = html;
+                }
+            }
+
+            UpdateColorButtons();
+            canvas.Invalidate();
+        }
+
+        private void UpdateColorButtons()
+        {
+            SetButtonColor(fillColorButton, fillColor);
+            SetButtonColor(outlineColorButton, outlineColor);
+            SetButtonColor(lineColorButton, lineColor);
+            SetButtonColor(textColorButton, textColor);
+            SetButtonColor(backgroundColorButton, backgroundColor);
+
+            if (fillPanelButton != null)
+            {
+                fillPanelButton.BackColor = fillColor;
+                outlinePanelButton.BackColor = outlineColor;
+                linePanelButton.BackColor = lineColor;
+                textPanelButton.BackColor = textColor;
+                backgroundPanelButton.BackColor = backgroundColor;
+            }
+        }
+
+        private void SetButtonColor(ToolStripButton button, Color color)
+        {
+            button.BackColor = color;
+            button.ForeColor = color.GetBrightness() < 0.45f ? Color.White : Color.Black;
+            button.DisplayStyle = ToolStripItemDisplayStyle.Text;
+        }
+
+        private Color PickCanvasColor(PointF point)
+        {
+            var imageItem = FindImageAt(point);
+            if (imageItem != null)
+            {
+                var image = GetImage(imageItem);
+                if (image != null)
+                {
+                    using (var bitmap = new Bitmap(image))
+                    {
+                        var rect = imageItem.Bounds.ToRectangleF();
+                        var px = (int)Math.Round((point.X - rect.X) / rect.Width * (bitmap.Width - 1));
+                        var py = (int)Math.Round((point.Y - rect.Y) / rect.Height * (bitmap.Height - 1));
+                        px = (int)Clamp(px, 0, bitmap.Width - 1);
+                        py = (int)Clamp(py, 0, bitmap.Height - 1);
+                        return bitmap.GetPixel(px, py);
+                    }
+                }
+            }
+
+            using (var bitmap = RenderToBitmap(1f))
+            {
+                var px = (int)Clamp(point.X, 0, bitmap.Width - 1);
+                var py = (int)Clamp(point.Y, 0, bitmap.Height - 1);
+                return bitmap.GetPixel(px, py);
+            }
+        }
+
+        private DiagramItem FindImageAt(PointF point)
+        {
+            for (var i = items.Count - 1; i >= 0; i--)
+            {
+                var item = items[i];
+                if (item.Type == "image" && item.Bounds.ToRectangleF().Contains(point))
+                {
+                    return item;
+                }
+            }
+            return null;
+        }
+
+        private void ApplyPickedColor(Color color)
+        {
+            var target = Convert.ToString(colorTargetCombo.SelectedItem).ToLowerInvariant();
+            SetColor(target, color, true);
+            SetStatus("Picked " + ColorTranslator.ToHtml(color) + " for " + target);
         }
 
         private DiagramItem FindItemAt(PointF point)
@@ -810,33 +1939,27 @@ namespace AKDiagrams
 
         private bool HitTest(DiagramItem item, PointF point)
         {
-            if (item.Type == "rect")
+            if (item.Type == "rect" || item.Type == "image")
             {
-                return GetRect(item).Contains(point);
+                return item.Bounds.ToRectangleF().Contains(point);
             }
             if (item.Type == "ellipse")
             {
-                var rect = GetRect(item);
+                var rect = item.Bounds.ToRectangleF();
                 var cx = rect.Left + rect.Width / 2f;
                 var cy = rect.Top + rect.Height / 2f;
                 var rx = rect.Width / 2f;
                 var ry = rect.Height / 2f;
-                if (rx <= 0f || ry <= 0f)
-                {
-                    return false;
-                }
+                if (rx <= 0f || ry <= 0f) return false;
                 var dx = (point.X - cx) / rx;
                 var dy = (point.Y - cy) / ry;
-                return (dx * dx + dy * dy) <= 1.0f;
+                return dx * dx + dy * dy <= 1f;
             }
             if (item.Type == "wire")
             {
-                var points = item.Points.Select(value => value.ToPointF()).ToList();
-                var threshold = Math.Max(6f, item.LineWidth + 2f);
-                for (var i = 0; i < points.Count - 1; i++)
+                for (var i = 0; i < item.Points.Count - 1; i++)
                 {
-                    var distance = DistanceToSegment(point, points[i], points[i + 1]);
-                    if (distance <= threshold)
+                    if (DistanceToSegment(point, item.Points[i].ToPointF(), item.Points[i + 1].ToPointF()) <= Math.Max(7f, item.LineWidth + 3f))
                     {
                         return true;
                     }
@@ -850,26 +1973,46 @@ namespace AKDiagrams
             return false;
         }
 
-        private float DistanceToSegment(PointF point, PointF a, PointF b)
+        private RectangleF GetBounds(DiagramItem item)
         {
-            var dx = b.X - a.X;
-            var dy = b.Y - a.Y;
-            if (Math.Abs(dx) < 0.001f && Math.Abs(dy) < 0.001f)
+            if (item.Type == "rect" || item.Type == "ellipse" || item.Type == "image")
             {
-                return Distance(point, a);
+                return item.Bounds.ToRectangleF();
             }
-            var t = ((point.X - a.X) * dx + (point.Y - a.Y) * dy) / (dx * dx + dy * dy);
-            if (t < 0f) t = 0f;
-            if (t > 1f) t = 1f;
-            var projection = new PointF(a.X + t * dx, a.Y + t * dy);
-            return Distance(point, projection);
+            if (item.Type == "wire")
+            {
+                if (item.Points.Count == 0)
+                {
+                    return RectangleF.Empty;
+                }
+                var minX = item.Points.Min(p => p.X);
+                var minY = item.Points.Min(p => p.Y);
+                var maxX = item.Points.Max(p => p.X);
+                var maxY = item.Points.Max(p => p.Y);
+                return new RectangleF(minX, minY, Math.Max(1f, maxX - minX), Math.Max(1f, maxY - minY));
+            }
+            if (item.Type == "text" && item.Points.Count > 0)
+            {
+                var text = item.Label ?? string.Empty;
+                var width = Math.Max(40f, text.Length * 9f);
+                var point = item.Points[0].ToPointF();
+                return new RectangleF(point.X - width / 2f, point.Y - 14f, width, 28f);
+            }
+            return RectangleF.Empty;
         }
 
-        private float Distance(PointF a, PointF b)
+        private bool HasResizableBounds(DiagramItem item)
         {
-            var dx = a.X - b.X;
-            var dy = a.Y - b.Y;
-            return (float)Math.Sqrt(dx * dx + dy * dy);
+            return item != null && (item.Type == "rect" || item.Type == "ellipse" || item.Type == "image");
+        }
+
+        private PointF Snap(PointF point)
+        {
+            if (!snapToGrid)
+            {
+                return point;
+            }
+            return new PointF((float)Math.Round(point.X / gridSize) * gridSize, (float)Math.Round(point.Y / gridSize) * gridSize);
         }
 
         private RectangleF NormalizeRect(PointF first, PointF second)
@@ -881,35 +2024,55 @@ namespace AKDiagrams
             return new RectangleF(left, top, right - left, bottom - top);
         }
 
-        private List<PointF> BuildOrthogonalPoints(PointF start, PointF end)
+        private float Distance(PointF a, PointF b)
         {
-            if (Math.Abs(end.X - start.X) >= Math.Abs(end.Y - start.Y))
+            var dx = a.X - b.X;
+            var dy = a.Y - b.Y;
+            return (float)Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        private float DistanceToSegment(PointF point, PointF a, PointF b)
+        {
+            var dx = b.X - a.X;
+            var dy = b.Y - a.Y;
+            if (Math.Abs(dx) < 0.001f && Math.Abs(dy) < 0.001f)
             {
-                return new List<PointF>
-                {
-                    start,
-                    new PointF(end.X, start.Y),
-                    end
-                };
+                return Distance(point, a);
             }
-            return new List<PointF>
+            var t = ((point.X - a.X) * dx + (point.Y - a.Y) * dy) / (dx * dx + dy * dy);
+            t = Clamp(t, 0f, 1f);
+            var projection = new PointF(a.X + t * dx, a.Y + t * dy);
+            return Distance(point, projection);
+        }
+
+        private float Clamp(float value, float min, float max)
+        {
+            if (value < min) return min;
+            if (value > max) return max;
+            return value;
+        }
+
+        private Color ParseColor(string value, Color fallback)
+        {
+            try
             {
-                start,
-                new PointF(start.X, end.Y),
-                end
-            };
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    return fallback;
+                }
+                return ColorTranslator.FromHtml(value);
+            }
+            catch
+            {
+                return fallback;
+            }
         }
 
         private void RenameSelected()
         {
-            if (selectedItem == null)
+            if (selectedItem == null || selectedItem.Type == "wire" || selectedItem.Type == "image")
             {
-                SetStatus("Select an object first");
-                return;
-            }
-            if (selectedItem.Type == "wire")
-            {
-                SetStatus("Wire has no label");
+                SetStatus("No editable label selected");
                 return;
             }
             var value = PromptDialog.Show("Enter label:", "Rename", selectedItem.Label ?? string.Empty);
@@ -928,125 +2091,71 @@ namespace AKDiagrams
             {
                 return;
             }
+            RemoveConnectionsTo(selectedItem.Id);
+            if (imageCache.ContainsKey(selectedItem.Id))
+            {
+                imageCache[selectedItem.Id].Dispose();
+                imageCache.Remove(selectedItem.Id);
+            }
             items.Remove(selectedItem);
             selectedItem = null;
+            UpdatePropertiesPanel();
             SetStatus("Deleted selection");
             canvas.Invalidate();
         }
 
-        private void ApplyStyleToSelected()
+        private void RemoveConnectionsTo(string itemId)
         {
-            if (selectedItem == null)
+            foreach (var item in items)
             {
-                SetStatus("Select an object first");
-                return;
+                if (item.Type != "wire")
+                {
+                    continue;
+                }
+                if (item.StartConnection != null && item.StartConnection.ElementId == itemId)
+                {
+                    item.StartConnection = null;
+                }
+                if (item.EndConnection != null && item.EndConnection.ElementId == itemId)
+                {
+                    item.EndConnection = null;
+                }
             }
-            if (selectedItem.Type == "rect" || selectedItem.Type == "ellipse")
-            {
-                selectedItem.FillColor = ColorTranslator.ToHtml(fillColor);
-                selectedItem.LineColor = ColorTranslator.ToHtml(lineColor);
-                selectedItem.TextColor = ColorTranslator.ToHtml(textColor);
-                selectedItem.LineWidth = lineWidth;
-            }
-            else if (selectedItem.Type == "wire")
-            {
-                selectedItem.LineColor = ColorTranslator.ToHtml(lineColor);
-                selectedItem.LineWidth = lineWidth;
-                selectedItem.Arrow = wireArrow;
-            }
-            else if (selectedItem.Type == "text")
-            {
-                selectedItem.TextColor = ColorTranslator.ToHtml(textColor);
-            }
-            SetStatus("Style applied");
-            canvas.Invalidate();
+        }
+
+        private void CancelActiveGesture()
+        {
+            drawStart = null;
+            dragKind = DragKind.None;
+            resizeHandle = string.Empty;
+            activeWirePointIndex = -1;
+            CancelPendingWire();
         }
 
         private void NewFile()
         {
             if (items.Count > 0)
             {
-                var result = MessageBox.Show(
-                    this,
-                    "Start a new diagram? Unsaved changes may be lost.",
-                    "ak-diagrams",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Question
-                );
+                var result = MessageBox.Show(this, "Start a new diagram? Unsaved changes may be lost.", AppInfo.Name, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 if (result != DialogResult.Yes)
                 {
                     return;
                 }
             }
+
+            ClearImages();
             items.Clear();
             selectedItem = null;
             drawStart = null;
-            wireStart = null;
-            dragging = false;
+            pendingWirePoints.Clear();
+            pendingStartConnection = null;
             currentPath = string.Empty;
+            nextItemNumber = 1;
+            backgroundColor = Color.FromArgb(248, 248, 248);
+            UpdateColorButtons();
+            UpdatePropertiesPanel();
             SetStatus("New diagram");
             canvas.Invalidate();
-        }
-
-        private string ResolveDefaultDialogDirectory(string appDirectory)
-        {
-            var configuredPath = Environment.GetEnvironmentVariable("AK_DIAGRAMS_DEFAULT_DIR");
-            if (string.IsNullOrWhiteSpace(configuredPath))
-            {
-                return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-            }
-
-            try
-            {
-                string resolvedPath;
-                if (Path.IsPathRooted(configuredPath))
-                {
-                    resolvedPath = Path.GetFullPath(configuredPath);
-                }
-                else
-                {
-                    resolvedPath = Path.GetFullPath(Path.Combine(appDirectory, configuredPath));
-                }
-
-                if (!Directory.Exists(resolvedPath))
-                {
-                    Directory.CreateDirectory(resolvedPath);
-                }
-
-                return resolvedPath;
-            }
-            catch
-            {
-                return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-            }
-        }
-
-        private string GetDialogInitialDirectory()
-        {
-            if (!string.IsNullOrWhiteSpace(currentPath))
-            {
-                var folder = Path.GetDirectoryName(currentPath);
-                if (!string.IsNullOrWhiteSpace(folder) && Directory.Exists(folder))
-                {
-                    return folder;
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(defaultDialogDirectory) && Directory.Exists(defaultDialogDirectory))
-            {
-                return defaultDialogDirectory;
-            }
-
-            return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-        }
-
-        private void ConfigureDialogInitialDirectory(FileDialog dialog)
-        {
-            var initialDirectory = GetDialogInitialDirectory();
-            if (!string.IsNullOrWhiteSpace(initialDirectory))
-            {
-                dialog.InitialDirectory = initialDirectory;
-            }
         }
 
         private void OpenFile()
@@ -1070,17 +2179,22 @@ namespace AKDiagrams
                         {
                             throw new InvalidDataException("Invalid diagram file.");
                         }
+                        ClearImages();
                         items.Clear();
                         items.AddRange(document.Items ?? new List<DiagramItem>());
+                        backgroundColor = ParseColor(document.BackgroundColor, Color.FromArgb(248, 248, 248));
                         selectedItem = null;
                         currentPath = dialog.FileName;
+                        nextItemNumber = GetNextItemNumber();
+                        UpdateColorButtons();
+                        UpdatePropertiesPanel();
                         SetStatus("Opened " + Path.GetFileName(dialog.FileName));
                         canvas.Invalidate();
                     }
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show(this, "Could not open file:\n" + ex.Message, "ak-diagrams", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show(this, "Could not open file:\n" + ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
         }
@@ -1115,12 +2229,11 @@ namespace AKDiagrams
         {
             try
             {
-                var document = new DiagramDocument
-                {
-                    App = "ak-diagrams",
-                    Version = 1,
-                    Items = items
-                };
+                var document = new DiagramDocument();
+                document.App = AppInfo.Name;
+                document.Version = AppInfo.Version;
+                document.BackgroundColor = ColorTranslator.ToHtml(backgroundColor);
+                document.Items = items;
                 using (var stream = File.Create(path))
                 {
                     var serializer = new DataContractJsonSerializer(typeof(DiagramDocument));
@@ -1131,8 +2244,25 @@ namespace AKDiagrams
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, "Could not save file:\n" + ex.Message, "ak-diagrams", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(this, "Could not save file:\n" + ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        private int GetNextItemNumber()
+        {
+            var max = 0;
+            foreach (var item in items)
+            {
+                if (item.Id != null && item.Id.StartsWith("item-"))
+                {
+                    int number;
+                    if (int.TryParse(item.Id.Substring(5), out number))
+                    {
+                        max = Math.Max(max, number);
+                    }
+                }
+            }
+            return max + 1;
         }
 
         private void ExportSvg()
@@ -1154,72 +2284,174 @@ namespace AKDiagrams
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show(this, "Could not export SVG:\n" + ex.Message, "ak-diagrams", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show(this, "Could not export SVG:\n" + ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
+        }
+
+        private void ExportPng()
+        {
+            using (var dialog = new SaveFileDialog())
+            {
+                dialog.Filter = "PNG (*.png)|*.png";
+                dialog.Title = "Export PNG";
+                dialog.DefaultExt = "png";
+                ConfigureDialogInitialDirectory(dialog);
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    return;
+                }
+                try
+                {
+                    using (var bitmap = RenderToBitmap(2f))
+                    {
+                        bitmap.Save(dialog.FileName, ImageFormat.Png);
+                    }
+                    SetStatus("Exported " + Path.GetFileName(dialog.FileName));
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, "Could not export PNG:\n" + ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private void ExportPdf()
+        {
+            using (var dialog = new SaveFileDialog())
+            {
+                dialog.Filter = "PDF (*.pdf)|*.pdf";
+                dialog.Title = "Export PDF";
+                dialog.DefaultExt = "pdf";
+                ConfigureDialogInitialDirectory(dialog);
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    return;
+                }
+                try
+                {
+                    using (var bitmap = RenderToBitmap(2f))
+                    {
+                        WriteImagePdf(dialog.FileName, bitmap, canvas.Width, canvas.Height);
+                    }
+                    SetStatus("Exported " + Path.GetFileName(dialog.FileName));
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, "Could not export PDF:\n" + ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private Bitmap RenderToBitmap(float scale)
+        {
+            var width = Math.Max(1, (int)(canvas.Width * scale));
+            var height = Math.Max(1, (int)(canvas.Height * scale));
+            var bitmap = new Bitmap(width, height);
+            bitmap.SetResolution(96f * scale, 96f * scale);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                RenderDiagram(graphics, canvas.ClientSize, false, scale);
+            }
+            return bitmap;
+        }
+
+        private void WriteImagePdf(string path, Bitmap bitmap, int pageWidth, int pageHeight)
+        {
+            byte[] imageBytes;
+            using (var imageStream = new MemoryStream())
+            {
+                var encoder = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Jpeg.Guid);
+                var parameters = new EncoderParameters(1);
+                parameters.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 95L);
+                bitmap.Save(imageStream, encoder, parameters);
+                imageBytes = imageStream.ToArray();
+            }
+
+            using (var stream = new FileStream(path, FileMode.Create, FileAccess.Write))
+            {
+                var offsets = new List<long>();
+                WriteAscii(stream, "%PDF-1.4\n%\u00E2\u00E3\u00CF\u00D3\n");
+
+                offsets.Add(stream.Position);
+                WriteAscii(stream, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+                offsets.Add(stream.Position);
+                WriteAscii(stream, "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+                offsets.Add(stream.Position);
+                WriteAscii(stream, string.Format("3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {0} {1}] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>\nendobj\n", pageWidth, pageHeight));
+
+                var content = string.Format("q\n{0} 0 0 {1} 0 0 cm\n/Im0 Do\nQ\n", pageWidth, pageHeight);
+                var contentBytes = Encoding.ASCII.GetBytes(content);
+                offsets.Add(stream.Position);
+                WriteAscii(stream, string.Format("4 0 obj\n<< /Length {0} >>\nstream\n", contentBytes.Length));
+                stream.Write(contentBytes, 0, contentBytes.Length);
+                WriteAscii(stream, "endstream\nendobj\n");
+
+                offsets.Add(stream.Position);
+                WriteAscii(stream, string.Format("5 0 obj\n<< /Type /XObject /Subtype /Image /Width {0} /Height {1} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {2} >>\nstream\n", bitmap.Width, bitmap.Height, imageBytes.Length));
+                stream.Write(imageBytes, 0, imageBytes.Length);
+                WriteAscii(stream, "\nendstream\nendobj\n");
+
+                var xref = stream.Position;
+                WriteAscii(stream, "xref\n0 6\n0000000000 65535 f \n");
+                foreach (var offset in offsets)
+                {
+                    WriteAscii(stream, offset.ToString("0000000000") + " 00000 n \n");
+                }
+                WriteAscii(stream, "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF\n");
+            }
+        }
+
+        private void WriteAscii(Stream stream, string text)
+        {
+            var bytes = Encoding.ASCII.GetBytes(text);
+            stream.Write(bytes, 0, bytes.Length);
         }
 
         private string BuildSvg()
         {
             var builder = new StringBuilder();
             builder.AppendLine("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
-            builder.AppendLine(string.Format(
-                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{0}\" height=\"{1}\" viewBox=\"0 0 {0} {1}\">",
-                canvas.Width,
-                canvas.Height
-            ));
+            builder.AppendLine(string.Format("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{0}\" height=\"{1}\" viewBox=\"0 0 {0} {1}\">", canvas.Width, canvas.Height));
             builder.AppendLine("<defs>");
             builder.AppendLine("<marker id=\"ak-arrow\" markerWidth=\"10\" markerHeight=\"8\" refX=\"9\" refY=\"4\" orient=\"auto\" markerUnits=\"strokeWidth\">");
             builder.AppendLine("<path d=\"M0,0 L10,4 L0,8 Z\" fill=\"context-stroke\"/>");
             builder.AppendLine("</marker>");
             builder.AppendLine("</defs>");
+            builder.AppendLine(string.Format("<rect x=\"0\" y=\"0\" width=\"{0}\" height=\"{1}\" fill=\"{2}\"/>", canvas.Width, canvas.Height, ColorTranslator.ToHtml(backgroundColor)));
 
             foreach (var item in items)
             {
-                if (item.Type == "rect" && item.Points.Count >= 2)
+                if (item.Type == "rect")
                 {
-                    var rect = GetRect(item);
-                    builder.AppendLine(string.Format(
-                        "<rect x=\"{0:F2}\" y=\"{1:F2}\" width=\"{2:F2}\" height=\"{3:F2}\" fill=\"{4}\" stroke=\"{5}\" stroke-width=\"{6:F2}\"/>",
-                        rect.X, rect.Y, rect.Width, rect.Height, item.FillColor, item.LineColor, item.LineWidth
-                    ));
-                    builder.AppendLine(string.Format(
-                        "<text x=\"{0:F2}\" y=\"{1:F2}\" fill=\"{2}\" font-family=\"Times New Roman\" font-size=\"18\" text-anchor=\"middle\" dominant-baseline=\"middle\">{3}</text>",
-                        rect.X + rect.Width / 2f, rect.Y + rect.Height / 2f, item.TextColor, EscapeXml(item.Label ?? string.Empty)
-                    ));
-                    continue;
+                    var rect = item.Bounds.ToRectangleF();
+                    builder.AppendLine(string.Format("<rect x=\"{0:F2}\" y=\"{1:F2}\" width=\"{2:F2}\" height=\"{3:F2}\" fill=\"{4}\" stroke=\"{5}\" stroke-width=\"{6:F2}\"/>", rect.X, rect.Y, rect.Width, rect.Height, item.FillColor, item.OutlineColor, item.LineWidth));
+                    AppendSvgText(builder, rect.X + rect.Width / 2f, rect.Y + rect.Height / 2f, item);
                 }
-                if (item.Type == "ellipse" && item.Points.Count >= 2)
+                else if (item.Type == "ellipse")
                 {
-                    var rect = GetRect(item);
-                    var cx = rect.X + rect.Width / 2f;
-                    var cy = rect.Y + rect.Height / 2f;
-                    builder.AppendLine(string.Format(
-                        "<ellipse cx=\"{0:F2}\" cy=\"{1:F2}\" rx=\"{2:F2}\" ry=\"{3:F2}\" fill=\"{4}\" stroke=\"{5}\" stroke-width=\"{6:F2}\"/>",
-                        cx, cy, rect.Width / 2f, rect.Height / 2f, item.FillColor, item.LineColor, item.LineWidth
-                    ));
-                    builder.AppendLine(string.Format(
-                        "<text x=\"{0:F2}\" y=\"{1:F2}\" fill=\"{2}\" font-family=\"Times New Roman\" font-size=\"18\" text-anchor=\"middle\" dominant-baseline=\"middle\">{3}</text>",
-                        cx, cy, item.TextColor, EscapeXml(item.Label ?? string.Empty)
-                    ));
-                    continue;
+                    var rect = item.Bounds.ToRectangleF();
+                    builder.AppendLine(string.Format("<ellipse cx=\"{0:F2}\" cy=\"{1:F2}\" rx=\"{2:F2}\" ry=\"{3:F2}\" fill=\"{4}\" stroke=\"{5}\" stroke-width=\"{6:F2}\"/>", rect.X + rect.Width / 2f, rect.Y + rect.Height / 2f, rect.Width / 2f, rect.Height / 2f, item.FillColor, item.OutlineColor, item.LineWidth));
+                    AppendSvgText(builder, rect.X + rect.Width / 2f, rect.Y + rect.Height / 2f, item);
                 }
-                if (item.Type == "wire" && item.Points.Count >= 2)
+                else if (item.Type == "wire" && item.Points.Count >= 2)
                 {
-                    var points = string.Join(" ", item.Points.Select(point => string.Format("{0:F2},{1:F2}", point.X, point.Y)));
+                    UpdateWireConnectionPoints(item);
+                    var points = string.Join(" ", item.Points.Select(p => string.Format("{0:F2},{1:F2}", p.X, p.Y)));
                     var marker = item.Arrow ? " marker-end=\"url(#ak-arrow)\"" : string.Empty;
-                    builder.AppendLine(string.Format(
-                        "<polyline points=\"{0}\" fill=\"none\" stroke=\"{1}\" stroke-width=\"{2:F2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"{3}/>",
-                        points, item.LineColor, item.LineWidth, marker
-                    ));
-                    continue;
+                    builder.AppendLine(string.Format("<polyline points=\"{0}\" fill=\"none\" stroke=\"{1}\" stroke-width=\"{2:F2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"{3}/>", points, item.LineColor, item.LineWidth, marker));
                 }
-                if (item.Type == "text" && item.Points.Count >= 1)
+                else if (item.Type == "text" && item.Points.Count >= 1)
                 {
-                    builder.AppendLine(string.Format(
-                        "<text x=\"{0:F2}\" y=\"{1:F2}\" fill=\"{2}\" font-family=\"Times New Roman\" font-size=\"18\" text-anchor=\"middle\" dominant-baseline=\"middle\">{3}</text>",
-                        item.Points[0].X, item.Points[0].Y, item.TextColor, EscapeXml(item.Label ?? string.Empty)
-                    ));
+                    AppendSvgText(builder, item.Points[0].X, item.Points[0].Y, item);
+                }
+                else if (item.Type == "image" && !string.IsNullOrWhiteSpace(item.ImageDataBase64))
+                {
+                    var rect = item.Bounds.ToRectangleF();
+                    var mime = item.ImageExtension == "jpeg" ? "image/jpeg" : item.ImageExtension == "bmp" ? "image/bmp" : "image/png";
+                    builder.AppendLine(string.Format("<image x=\"{0:F2}\" y=\"{1:F2}\" width=\"{2:F2}\" height=\"{3:F2}\" href=\"data:{4};base64,{5}\"/>", rect.X, rect.Y, rect.Width, rect.Height, mime, item.ImageDataBase64));
                 }
             }
 
@@ -1227,32 +2459,99 @@ namespace AKDiagrams
             return builder.ToString();
         }
 
-        private string EscapeXml(string value)
+        private void AppendSvgText(StringBuilder builder, float x, float y, DiagramItem item)
         {
-            return value
-                .Replace("&", "&amp;")
-                .Replace("<", "&lt;")
-                .Replace(">", "&gt;")
-                .Replace("\"", "&quot;")
-                .Replace("'", "&apos;");
+            builder.AppendLine(string.Format("<text x=\"{0:F2}\" y=\"{1:F2}\" fill=\"{2}\" font-family=\"{3}\" font-size=\"18\" text-anchor=\"middle\" dominant-baseline=\"middle\">{4}</text>", x, y, item.TextColor, EscapeXml(item.FontFamily), EscapeXml(item.Label ?? string.Empty)));
         }
 
-        private Color ParseColor(string value, Color fallback)
+        private string EscapeXml(string value)
         {
+            return (value ?? string.Empty).Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;").Replace("'", "&apos;");
+        }
+
+        private string ResolveDefaultDialogDirectory(string appDirectory)
+        {
+            var configuredPath = Environment.GetEnvironmentVariable("AK_DIAGRAMS_DEFAULT_DIR");
+            if (string.IsNullOrWhiteSpace(configuredPath))
+            {
+                return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            }
+
             try
             {
-                return ColorTranslator.FromHtml(value);
+                var resolvedPath = Path.IsPathRooted(configuredPath)
+                    ? Path.GetFullPath(configuredPath)
+                    : Path.GetFullPath(Path.Combine(appDirectory, configuredPath));
+
+                if (!Directory.Exists(resolvedPath))
+                {
+                    Directory.CreateDirectory(resolvedPath);
+                }
+                return resolvedPath;
             }
             catch
             {
-                return fallback;
+                return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
             }
+        }
+
+        private string GetDialogInitialDirectory()
+        {
+            if (!string.IsNullOrWhiteSpace(currentPath))
+            {
+                var folder = Path.GetDirectoryName(currentPath);
+                if (!string.IsNullOrWhiteSpace(folder) && Directory.Exists(folder))
+                {
+                    return folder;
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(defaultDialogDirectory) && Directory.Exists(defaultDialogDirectory))
+            {
+                return defaultDialogDirectory;
+            }
+            return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        }
+
+        private void ConfigureDialogInitialDirectory(FileDialog dialog)
+        {
+            var initialDirectory = GetDialogInitialDirectory();
+            if (!string.IsNullOrWhiteSpace(initialDirectory))
+            {
+                dialog.InitialDirectory = initialDirectory;
+            }
+        }
+
+        private void ClearImages()
+        {
+            foreach (var image in imageCache.Values)
+            {
+                image.Dispose();
+            }
+            imageCache.Clear();
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            ClearImages();
+            base.OnFormClosed(e);
+        }
+    }
+
+    public class HandleHit
+    {
+        public string Name { get; private set; }
+        public int Index { get; private set; }
+
+        public HandleHit(string name, int index)
+        {
+            Name = name;
+            Index = index;
         }
     }
 
     public static class PromptDialog
     {
-        public static string Show(string text, string caption, string defaultValue = "")
+        public static string Show(string text, string caption, string defaultValue)
         {
             using (var form = new Form())
             using (var textLabel = new Label())
@@ -1289,6 +2588,17 @@ namespace AKDiagrams
                 return form.ShowDialog() == DialogResult.OK ? inputBox.Text : null;
             }
         }
+
+        public static string Show(string text, string caption)
+        {
+            return Show(text, caption, string.Empty);
+        }
+    }
+
+    public static class NativeMethods
+    {
+        [DllImport("user32.dll")]
+        public static extern bool SetProcessDPIAware();
     }
 
     public static class Program
@@ -1296,6 +2606,14 @@ namespace AKDiagrams
         [STAThread]
         public static void Main()
         {
+            try
+            {
+                NativeMethods.SetProcessDPIAware();
+            }
+            catch
+            {
+            }
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new DiagramForm());

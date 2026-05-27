@@ -5,6 +5,12 @@ obj/
 *.exe
 *.dll
 *.pdb
+!releases/
+!releases/**
+!releases/**/*.exe
+
+# Local generated diagrams
+my-diagrams/
 
 # Visual Studio / Windows
 .vs/
