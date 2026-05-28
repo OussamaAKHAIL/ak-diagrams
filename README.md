@@ -1,5 +1,11 @@
 # ak-diagrams
 
+![Language](https://img.shields.io/badge/Language-C%23-blue.svg)
+![Platform](https://img.shields.io/badge/Platform-Windows-blue.svg)
+![License](https://img.shields.io/badge/License-MIT-green.svg)
+![Version](https://img.shields.io/badge/Version-2.0.0-orange.svg)
+![Status](https://img.shields.io/badge/Status-Active%20Development-brightgreen.svg)
+
 `ak-diagrams` is a lightweight Windows diagram editor for clean technical schematics, block diagrams, research-paper figures, and electronics-style system sketches.
 
 It is designed for people who want something faster and smaller than a full CAD or drawing suite, while still keeping diagrams editable, structured, and exportable.
