@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.1.1
+
+- Fixed a crash when starting a wire and the preview briefly had fewer than two drawable points.
+- Added a defensive SVG export guard for collapsed wire geometry.
+
+## v2.1.0
+
+- Added mouse wheel and touchpad zoom.
+- Added keyboard shortcuts for copy, paste, duplicate, zoom, save, open, new, and delete.
+- Added right-click context menus for elements, wires, and the canvas.
+- Moved canvas color picking into each color control.
+- Added per-wire modes: orthogonal turns, flexible angles, and extra flexible curves.
+- Kept orthogonal wire routing as the default for schematic diagrams.
+
 ## v2.0.0
 
 - Added flexible multi-turn wires with draggable point handles.

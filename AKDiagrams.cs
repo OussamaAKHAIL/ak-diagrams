@@ -16,7 +16,7 @@ namespace AKDiagrams
     public static class AppInfo
     {
         public const string Name = "ak-diagrams";
-        public const string Version = "2.0.0";
+        public const string Version = "2.1.1";
     }
 
     public enum ToolKind
@@ -174,6 +174,9 @@ namespace AKDiagrams
         public string FontFamily { get; set; }
 
         [DataMember]
+        public string WireMode { get; set; }
+
+        [DataMember]
         public string ImageDataBase64 { get; set; }
 
         [DataMember]
@@ -203,6 +206,7 @@ namespace AKDiagrams
             LineWidth = 2f;
             Arrow = false;
             FontFamily = "Times New Roman";
+            WireMode = "orthogonal";
             ImageDataBase64 = string.Empty;
             ImageExtension = "png";
             SourceFileName = string.Empty;
@@ -257,8 +261,7 @@ namespace AKDiagrams
             new ElementDefinition("Device", "Core", ToolKind.Device),
             new ElementDefinition("Wire", "Core", ToolKind.Wire),
             new ElementDefinition("Text", "Annotation", ToolKind.Text),
-            new ElementDefinition("Image", "Reference", ToolKind.Image),
-            new ElementDefinition("Color Picker", "Reference", ToolKind.ColorPicker)
+            new ElementDefinition("Image", "Reference", ToolKind.Image)
         };
     }
 
@@ -326,7 +329,6 @@ namespace AKDiagrams
         private readonly List<DiagramItem> items = new List<DiagramItem>();
         private readonly Dictionary<string, Image> imageCache = new Dictionary<string, Image>();
 
-        private readonly ToolStripComboBox colorTargetCombo = new ToolStripComboBox();
         private readonly ToolStripButton fillColorButton = new ToolStripButton("Fill");
         private readonly ToolStripButton outlineColorButton = new ToolStripButton("Outline");
         private readonly ToolStripButton lineColorButton = new ToolStripButton("Line");
@@ -358,9 +360,12 @@ namespace AKDiagrams
         private PointF? drawStart;
         private bool movedInDrag;
         private bool updatingProperties;
+        private ToolKind toolBeforeColorPick = ToolKind.Select;
+        private string activeColorPickTarget = "fill";
 
         private readonly List<FloatPoint> pendingWirePoints = new List<FloatPoint>();
         private WireConnection pendingStartConnection;
+        private DiagramItem copiedItem;
 
         private bool snapToGrid = true;
         private bool showGrid = true;
@@ -377,6 +382,8 @@ namespace AKDiagrams
         private string fontFamily = "Times New Roman";
         private string currentPath = string.Empty;
         private readonly string defaultDialogDirectory;
+        private float viewScale = 1f;
+        private PointF viewOffset = new PointF(0f, 0f);
 
         public DiagramForm()
         {
@@ -461,19 +468,11 @@ namespace AKDiagrams
 
             toolStrip.Items.Add(new ToolStripSeparator());
 
-            colorTargetCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-            colorTargetCombo.AutoSize = false;
-            colorTargetCombo.Width = 95;
-            colorTargetCombo.Items.AddRange(new object[] { "Fill", "Outline", "Line", "Text", "Background" });
-            colorTargetCombo.SelectedIndex = 0;
-            colorTargetCombo.ToolTipText = "Target for the color picker";
-            toolStrip.Items.Add(colorTargetCombo);
-
-            fillColorButton.Click += delegate { PickColor("fill"); };
-            outlineColorButton.Click += delegate { PickColor("outline"); };
-            lineColorButton.Click += delegate { PickColor("line"); };
-            textColorButton.Click += delegate { PickColor("text"); };
-            backgroundColorButton.Click += delegate { PickColor("background"); };
+            fillColorButton.Click += delegate { ShowColorMenu("fill", fillColorButton); };
+            outlineColorButton.Click += delegate { ShowColorMenu("outline", outlineColorButton); };
+            lineColorButton.Click += delegate { ShowColorMenu("line", lineColorButton); };
+            textColorButton.Click += delegate { ShowColorMenu("text", textColorButton); };
+            backgroundColorButton.Click += delegate { ShowColorMenu("background", backgroundColorButton); };
             toolStrip.Items.Add(fillColorButton);
             toolStrip.Items.Add(outlineColorButton);
             toolStrip.Items.Add(lineColorButton);
@@ -614,7 +613,7 @@ namespace AKDiagrams
             var button = new Button();
             button.Text = "Choose";
             button.SetBounds(95, y, 175, 28);
-            button.Click += delegate { PickColor(target); };
+            button.Click += delegate { ShowColorMenu(target, button); };
             propertiesPanel.Controls.Add(button);
             y += 34;
             return button;
@@ -622,11 +621,14 @@ namespace AKDiagrams
 
         private void InitializeCanvas()
         {
+            canvas.TabStop = true;
             canvas.Paint += Canvas_Paint;
             canvas.MouseDown += Canvas_MouseDown;
             canvas.MouseMove += Canvas_MouseMove;
             canvas.MouseUp += Canvas_MouseUp;
+            canvas.MouseWheel += Canvas_MouseWheel;
             canvas.DoubleClick += Canvas_DoubleClick;
+            canvas.MouseEnter += delegate { canvas.Focus(); };
             canvas.Resize += delegate { canvas.Invalidate(); };
             Controls.Add(canvas);
         }
@@ -659,6 +661,37 @@ namespace AKDiagrams
             else if (e.Control && e.KeyCode == Keys.N)
             {
                 NewFile();
+                e.Handled = true;
+            }
+            else if (e.Control && e.KeyCode == Keys.C)
+            {
+                CopySelected();
+                e.Handled = true;
+            }
+            else if (e.Control && e.KeyCode == Keys.V)
+            {
+                PasteCopied();
+                e.Handled = true;
+            }
+            else if (e.Control && e.KeyCode == Keys.D)
+            {
+                CopySelected();
+                PasteCopied();
+                e.Handled = true;
+            }
+            else if (e.Control && e.KeyCode == Keys.D0)
+            {
+                ResetZoom();
+                e.Handled = true;
+            }
+            else if (e.Control && (e.KeyCode == Keys.Oemplus || e.KeyCode == Keys.Add))
+            {
+                ZoomAt(new PointF(canvas.Width / 2f, canvas.Height / 2f), 1.15f);
+                e.Handled = true;
+            }
+            else if (e.Control && (e.KeyCode == Keys.OemMinus || e.KeyCode == Keys.Subtract))
+            {
+                ZoomAt(new PointF(canvas.Width / 2f, canvas.Height / 2f), 1f / 1.15f);
                 e.Handled = true;
             }
             else if (e.KeyCode == Keys.Enter && pendingWirePoints.Count >= 2)
@@ -718,6 +751,40 @@ namespace AKDiagrams
             statusLabel.Text = text;
         }
 
+        private PointF ScreenToDiagram(PointF point)
+        {
+            return new PointF((point.X - viewOffset.X) / viewScale, (point.Y - viewOffset.Y) / viewScale);
+        }
+
+        private PointF DiagramToScreen(PointF point)
+        {
+            return new PointF(point.X * viewScale + viewOffset.X, point.Y * viewScale + viewOffset.Y);
+        }
+
+        private void ZoomAt(PointF screenPoint, float factor)
+        {
+            var oldScale = viewScale;
+            var newScale = Clamp(viewScale * factor, 0.25f, 4f);
+            if (Math.Abs(newScale - oldScale) < 0.001f)
+            {
+                return;
+            }
+
+            var diagramPoint = ScreenToDiagram(screenPoint);
+            viewScale = newScale;
+            viewOffset = new PointF(screenPoint.X - diagramPoint.X * viewScale, screenPoint.Y - diagramPoint.Y * viewScale);
+            SetStatus("Zoom " + Math.Round(viewScale * 100f) + "%");
+            canvas.Invalidate();
+        }
+
+        private void ResetZoom()
+        {
+            viewScale = 1f;
+            viewOffset = new PointF(0f, 0f);
+            SetStatus("Zoom reset");
+            canvas.Invalidate();
+        }
+
         private string CreateItemId()
         {
             var id = "item-" + nextItemNumber.ToString("0000");
@@ -744,16 +811,14 @@ namespace AKDiagrams
         private void Canvas_MouseDown(object sender, MouseEventArgs e)
         {
             canvas.Focus();
-            var rawPoint = new PointF(e.X, e.Y);
+            var screenPoint = new PointF(e.X, e.Y);
+            var rawPoint = ScreenToDiagram(screenPoint);
             currentPointer = rawPoint;
             var point = Snap(rawPoint);
 
             if (e.Button == MouseButtons.Right)
             {
-                if (currentTool == ToolKind.Wire && pendingWirePoints.Count >= 2)
-                {
-                    FinishPendingWire();
-                }
+                ShowContextMenu(screenPoint, point);
                 return;
             }
 
@@ -802,7 +867,7 @@ namespace AKDiagrams
 
         private void Canvas_MouseMove(object sender, MouseEventArgs e)
         {
-            var rawPoint = new PointF(e.X, e.Y);
+            var rawPoint = ScreenToDiagram(new PointF(e.X, e.Y));
             currentPointer = rawPoint;
 
             if (dragKind != DragKind.None && selectedItem != null)
@@ -848,7 +913,7 @@ namespace AKDiagrams
 
         private void Canvas_MouseUp(object sender, MouseEventArgs e)
         {
-            var point = Snap(new PointF(e.X, e.Y));
+            var point = Snap(ScreenToDiagram(new PointF(e.X, e.Y)));
 
             if ((currentTool == ToolKind.Block || currentTool == ToolKind.Device) && drawStart != null)
             {
@@ -878,9 +943,22 @@ namespace AKDiagrams
             movedInDrag = false;
         }
 
+        private void Canvas_MouseWheel(object sender, MouseEventArgs e)
+        {
+            var steps = e.Delta / 120f;
+            if (Math.Abs(steps) < 0.01f)
+            {
+                steps = e.Delta > 0 ? 0.25f : -0.25f;
+            }
+
+            var factor = (float)Math.Pow(1.12, steps);
+            ZoomAt(new PointF(e.X, e.Y), factor);
+        }
+
         private void Canvas_DoubleClick(object sender, EventArgs e)
         {
-            var point = Snap(canvas.PointToClient(Cursor.Position));
+            var cursorPoint = canvas.PointToClient(Cursor.Position);
+            var point = Snap(ScreenToDiagram(new PointF(cursorPoint.X, cursorPoint.Y)));
             if (currentTool == ToolKind.Wire && pendingWirePoints.Count >= 2)
             {
                 FinishPendingWire();
@@ -948,6 +1026,213 @@ namespace AKDiagrams
                 movedInDrag = false;
                 SetStatus("Selected " + selectedItem.Type);
             }
+            canvas.Invalidate();
+        }
+
+        private void ShowContextMenu(PointF screenPoint, PointF diagramPoint)
+        {
+            if (pendingWirePoints.Count >= 2)
+            {
+                var pendingMenu = new ContextMenuStrip();
+                pendingMenu.Items.Add("Finish Wire", null, delegate { FinishPendingWire(); });
+                pendingMenu.Items.Add("Cancel Wire", null, delegate { CancelPendingWire(); });
+                pendingMenu.Show(canvas, new Point((int)screenPoint.X, (int)screenPoint.Y));
+                return;
+            }
+
+            var hit = FindItemAt(diagramPoint);
+            if (hit != null)
+            {
+                selectedItem = hit;
+                UpdatePropertiesPanel();
+                canvas.Invalidate();
+            }
+            else
+            {
+                selectedItem = null;
+                UpdatePropertiesPanel();
+                canvas.Invalidate();
+            }
+
+            var menu = new ContextMenuStrip();
+            if (selectedItem != null)
+            {
+                if (selectedItem.Type != "wire" && selectedItem.Type != "image")
+                {
+                    menu.Items.Add("Rename", null, delegate { RenameSelected(); });
+                }
+
+                menu.Items.Add("Copy", null, delegate { CopySelected(); });
+                menu.Items.Add("Duplicate", null, delegate { CopySelected(); PasteCopied(); });
+
+                if (selectedItem.Type == "wire")
+                {
+                    menu.Items.Add(new ToolStripSeparator());
+                    var wireModeMenu = new ToolStripMenuItem("Wire Mode");
+                    wireModeMenu.DropDownItems.Add("Orthogonal Turns", null, delegate { SetSelectedWireMode("orthogonal"); });
+                    wireModeMenu.DropDownItems.Add("Flexible Angles", null, delegate { SetSelectedWireMode("angled"); });
+                    wireModeMenu.DropDownItems.Add("Extra Flexible Curves", null, delegate { SetSelectedWireMode("curved"); });
+                    menu.Items.Add(wireModeMenu);
+                    menu.Items.Add("Add Turn Here", null, delegate
+                    {
+                        if (InsertWireTurnAt(selectedItem, diagramPoint))
+                        {
+                            canvas.Invalidate();
+                        }
+                    });
+                    menu.Items.Add(selectedItem.Arrow ? "Remove Arrow" : "Add Arrow", null, delegate
+                    {
+                        selectedItem.Arrow = !selectedItem.Arrow;
+                        canvas.Invalidate();
+                    });
+                    menu.Items.Add("Disconnect Ends", null, delegate
+                    {
+                        selectedItem.StartConnection = null;
+                        selectedItem.EndConnection = null;
+                        canvas.Invalidate();
+                    });
+                    menu.Items.Add("Line Color", null, delegate { ShowColorMenu("line", canvas, screenPoint); });
+                }
+                else
+                {
+                    menu.Items.Add(new ToolStripSeparator());
+                    menu.Items.Add("Fill Color", null, delegate { ShowColorMenu("fill", canvas, screenPoint); });
+                    menu.Items.Add("Outline Color", null, delegate { ShowColorMenu("outline", canvas, screenPoint); });
+                    menu.Items.Add("Line Color", null, delegate { ShowColorMenu("line", canvas, screenPoint); });
+                    menu.Items.Add("Text Color", null, delegate { ShowColorMenu("text", canvas, screenPoint); });
+                    menu.Items.Add("Bring To Front", null, delegate { BringSelectedToFront(); });
+                    menu.Items.Add("Send To Back", null, delegate { SendSelectedToBack(); });
+                }
+
+                menu.Items.Add(new ToolStripSeparator());
+                menu.Items.Add("Delete", null, delegate { DeleteSelected(); });
+            }
+            else
+            {
+                menu.Items.Add("Paste", null, delegate { PasteCopiedAt(diagramPoint); }).Enabled = copiedItem != null;
+                menu.Items.Add("Background Color", null, delegate { ShowColorMenu("background", canvas, screenPoint); });
+            }
+
+            menu.Show(canvas, new Point((int)screenPoint.X, (int)screenPoint.Y));
+        }
+
+        private void ShowColorMenu(string target, Control control, PointF screenPoint)
+        {
+            var menu = BuildColorMenu(target);
+            menu.Show(control, new Point((int)screenPoint.X, (int)screenPoint.Y));
+        }
+
+        private void CopySelected()
+        {
+            if (selectedItem == null)
+            {
+                SetStatus("Nothing selected to copy");
+                return;
+            }
+
+            copiedItem = CloneItem(selectedItem, false);
+            SetStatus("Copied " + selectedItem.Type);
+        }
+
+        private void PasteCopied()
+        {
+            var center = ScreenToDiagram(new PointF(canvas.Width / 2f, canvas.Height / 2f));
+            PasteCopiedAt(center);
+        }
+
+        private void PasteCopiedAt(PointF point)
+        {
+            if (copiedItem == null)
+            {
+                SetStatus("Nothing copied");
+                return;
+            }
+
+            var pasted = CloneItem(copiedItem, true);
+            MovePastedItemNear(pasted, point);
+            items.Add(pasted);
+            selectedItem = pasted;
+            if (pasted.Type == "image")
+            {
+                var image = GetImage(pasted);
+                if (image != null)
+                {
+                    imageCache[pasted.Id] = image;
+                }
+            }
+            UpdatePropertiesPanel();
+            SetStatus("Pasted " + pasted.Type);
+            canvas.Invalidate();
+        }
+
+        private DiagramItem CloneItem(DiagramItem source, bool assignNewId)
+        {
+            var clone = new DiagramItem();
+            clone.Id = assignNewId ? CreateItemId() : source.Id;
+            clone.Type = source.Type;
+            clone.Category = source.Category;
+            clone.Bounds = new FloatRect(source.Bounds.X, source.Bounds.Y, source.Bounds.Width, source.Bounds.Height);
+            clone.Points = ClonePoints(source.Points);
+            clone.Label = source.Label;
+            clone.FillColor = source.FillColor;
+            clone.OutlineColor = source.OutlineColor;
+            clone.LineColor = source.LineColor;
+            clone.TextColor = source.TextColor;
+            clone.LineWidth = source.LineWidth;
+            clone.Arrow = source.Arrow;
+            clone.FontFamily = source.FontFamily;
+            clone.WireMode = string.IsNullOrWhiteSpace(source.WireMode) ? "orthogonal" : source.WireMode;
+            clone.ImageDataBase64 = source.ImageDataBase64;
+            clone.ImageExtension = source.ImageExtension;
+            clone.SourceFileName = source.SourceFileName;
+            clone.StartConnection = null;
+            clone.EndConnection = null;
+            return clone;
+        }
+
+        private void MovePastedItemNear(DiagramItem item, PointF target)
+        {
+            var bounds = GetBounds(item);
+            if (bounds == RectangleF.Empty)
+            {
+                MoveItem(item, 24f, 24f);
+                return;
+            }
+
+            var center = new PointF(bounds.X + bounds.Width / 2f, bounds.Y + bounds.Height / 2f);
+            MoveItem(item, target.X - center.X + 24f, target.Y - center.Y + 24f);
+        }
+
+        private void BringSelectedToFront()
+        {
+            if (selectedItem == null)
+            {
+                return;
+            }
+            items.Remove(selectedItem);
+            items.Add(selectedItem);
+            canvas.Invalidate();
+        }
+
+        private void SendSelectedToBack()
+        {
+            if (selectedItem == null)
+            {
+                return;
+            }
+            items.Remove(selectedItem);
+            items.Insert(0, selectedItem);
+            canvas.Invalidate();
+        }
+
+        private void SetSelectedWireMode(string mode)
+        {
+            if (selectedItem == null || selectedItem.Type != "wire")
+            {
+                return;
+            }
+            selectedItem.WireMode = mode;
+            SetStatus("Wire mode: " + mode);
             canvas.Invalidate();
         }
 
@@ -1030,6 +1315,7 @@ namespace AKDiagrams
             item.LineColor = ColorTranslator.ToHtml(lineColor);
             item.LineWidth = lineWidth;
             item.Arrow = wireArrow;
+            item.WireMode = "orthogonal";
             item.StartConnection = pendingStartConnection;
             item.EndConnection = CreateConnectionAt(item.Points[item.Points.Count - 1].ToPointF());
             if (item.EndConnection != null)
@@ -1056,7 +1342,7 @@ namespace AKDiagrams
 
         private void InsertImageAtCenter()
         {
-            InsertImageAt(new PointF(canvas.Width / 2f, canvas.Height / 2f));
+            InsertImageAt(ScreenToDiagram(new PointF(canvas.Width / 2f, canvas.Height / 2f)));
         }
 
         private void InsertImageAt(PointF point)
@@ -1154,11 +1440,20 @@ namespace AKDiagrams
             graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
             graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
             graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-            graphics.ScaleTransform(scale, scale);
 
             using (var backgroundBrush = new SolidBrush(backgroundColor))
             {
-                graphics.FillRectangle(backgroundBrush, 0, 0, size.Width, size.Height);
+                graphics.FillRectangle(backgroundBrush, 0, 0, size.Width * scale, size.Height * scale);
+            }
+
+            if (includeEditorUi)
+            {
+                graphics.TranslateTransform(viewOffset.X, viewOffset.Y);
+                graphics.ScaleTransform(viewScale, viewScale);
+            }
+            else
+            {
+                graphics.ScaleTransform(scale, scale);
             }
 
             if (includeEditorUi && showGrid)
@@ -1182,13 +1477,20 @@ namespace AKDiagrams
         {
             using (var pen = new Pen(Color.FromArgb(230, 230, 230), 1f))
             {
-                for (var x = 0; x <= canvas.Width; x += gridSize)
+                var topLeft = ScreenToDiagram(new PointF(0f, 0f));
+                var bottomRight = ScreenToDiagram(new PointF(canvas.Width, canvas.Height));
+                var startX = (int)Math.Floor(topLeft.X / gridSize) * gridSize;
+                var endX = (int)Math.Ceiling(bottomRight.X / gridSize) * gridSize;
+                var startY = (int)Math.Floor(topLeft.Y / gridSize) * gridSize;
+                var endY = (int)Math.Ceiling(bottomRight.Y / gridSize) * gridSize;
+
+                for (var x = startX; x <= endX; x += gridSize)
                 {
-                    graphics.DrawLine(pen, x, 0, x, canvas.Height);
+                    graphics.DrawLine(pen, x, startY, x, endY);
                 }
-                for (var y = 0; y <= canvas.Height; y += gridSize)
+                for (var y = startY; y <= endY; y += gridSize)
                 {
-                    graphics.DrawLine(pen, 0, y, canvas.Width, y);
+                    graphics.DrawLine(pen, startX, y, endX, y);
                 }
             }
         }
@@ -1252,7 +1554,7 @@ namespace AKDiagrams
             }
 
             UpdateWireConnectionPoints(item);
-            var points = item.Points.Select(p => p.ToPointF()).ToArray();
+            var points = GetWireDisplayPoints(item).ToArray();
             using (var pen = new Pen(ParseColor(item.LineColor, Color.Black), item.LineWidth))
             {
                 pen.StartCap = LineCap.Round;
@@ -1262,7 +1564,7 @@ namespace AKDiagrams
                 {
                     pen.CustomEndCap = new AdjustableArrowCap(4f, 6f, true);
                 }
-                graphics.DrawLines(pen, points);
+                DrawWirePath(graphics, pen, points, IsCurvedWire(item));
             }
         }
 
@@ -1282,6 +1584,54 @@ namespace AKDiagrams
                 format.LineAlignment = StringAlignment.Center;
                 graphics.DrawString(item.Label ?? string.Empty, font, brush, point, format);
             }
+        }
+
+        private List<PointF> GetWireDisplayPoints(DiagramItem wire)
+        {
+            var controlPoints = wire.Points.Select(p => p.ToPointF()).ToList();
+            if (IsOrthogonalWire(wire))
+            {
+                return BuildOrthogonalDisplayPoints(controlPoints);
+            }
+            return controlPoints;
+        }
+
+        private List<PointF> BuildOrthogonalDisplayPoints(List<PointF> controlPoints)
+        {
+            var displayPoints = new List<PointF>();
+            if (controlPoints.Count == 0)
+            {
+                return displayPoints;
+            }
+
+            displayPoints.Add(controlPoints[0]);
+            for (var i = 1; i < controlPoints.Count; i++)
+            {
+                var previous = displayPoints[displayPoints.Count - 1];
+                var target = controlPoints[i];
+                var elbow = new PointF(target.X, previous.Y);
+                AddDistinctPoint(displayPoints, elbow);
+                AddDistinctPoint(displayPoints, target);
+            }
+            return displayPoints;
+        }
+
+        private void AddDistinctPoint(List<PointF> points, PointF point)
+        {
+            if (points.Count == 0 || Distance(points[points.Count - 1], point) > 0.5f)
+            {
+                points.Add(point);
+            }
+        }
+
+        private bool IsOrthogonalWire(DiagramItem wire)
+        {
+            return wire == null || string.IsNullOrWhiteSpace(wire.WireMode) || wire.WireMode == "orthogonal";
+        }
+
+        private bool IsCurvedWire(DiagramItem wire)
+        {
+            return wire != null && wire.WireMode == "curved";
         }
 
         private void DrawImage(Graphics graphics, DiagramItem item)
@@ -1320,12 +1670,30 @@ namespace AKDiagrams
                 {
                     var points = ClonePoints(pendingWirePoints);
                     points.Add(FloatPoint.FromPointF(snappedPointer));
+                    var displayPoints = BuildOrthogonalDisplayPoints(points.Select(p => p.ToPointF()).ToList());
                     if (wireArrow)
                     {
                         pen.CustomEndCap = new AdjustableArrowCap(4f, 6f, true);
                     }
-                    graphics.DrawLines(pen, points.Select(p => p.ToPointF()).ToArray());
+                    DrawWirePath(graphics, pen, displayPoints.ToArray(), false);
                 }
+            }
+        }
+
+        private void DrawWirePath(Graphics graphics, Pen pen, PointF[] points, bool curved)
+        {
+            if (points == null || points.Length < 2)
+            {
+                return;
+            }
+
+            if (curved && points.Length >= 3)
+            {
+                graphics.DrawCurve(pen, points, 0.35f);
+            }
+            else
+            {
+                graphics.DrawLines(pen, points);
             }
         }
 
@@ -1577,7 +1945,15 @@ namespace AKDiagrams
             var bestDistance = float.MaxValue;
             for (var i = 0; i < wire.Points.Count - 1; i++)
             {
-                var distance = DistanceToSegment(point, wire.Points[i].ToPointF(), wire.Points[i + 1].ToPointF());
+                var segmentPoints = IsOrthogonalWire(wire)
+                    ? BuildOrthogonalDisplayPoints(new List<PointF> { wire.Points[i].ToPointF(), wire.Points[i + 1].ToPointF() })
+                    : new List<PointF> { wire.Points[i].ToPointF(), wire.Points[i + 1].ToPointF() };
+
+                var distance = float.MaxValue;
+                for (var segmentIndex = 0; segmentIndex < segmentPoints.Count - 1; segmentIndex++)
+                {
+                    distance = Math.Min(distance, DistanceToSegment(point, segmentPoints[segmentIndex], segmentPoints[segmentIndex + 1]));
+                }
                 if (distance < bestDistance)
                 {
                     bestDistance = distance;
@@ -1815,6 +2191,34 @@ namespace AKDiagrams
             }
         }
 
+        private void ShowColorMenu(string target, ToolStripItem item)
+        {
+            var menu = BuildColorMenu(target);
+            menu.Show(toolStrip, item.Bounds.Left, item.Bounds.Bottom);
+        }
+
+        private void ShowColorMenu(string target, Control control)
+        {
+            var menu = BuildColorMenu(target);
+            menu.Show(control, new Point(0, control.Height));
+        }
+
+        private ContextMenuStrip BuildColorMenu(string target)
+        {
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Choose color...", null, delegate { PickColor(target); });
+            menu.Items.Add("Pick from canvas", null, delegate { BeginCanvasColorPick(target); });
+            return menu;
+        }
+
+        private void BeginCanvasColorPick(string target)
+        {
+            activeColorPickTarget = target;
+            toolBeforeColorPick = currentTool == ToolKind.ColorPicker ? ToolKind.Select : currentTool;
+            SetTool(ToolKind.ColorPicker);
+            SetStatus("Click the canvas to pick " + target + " color");
+        }
+
         private void SetColor(string target, Color color, bool applyToSelection)
         {
             if (target == "fill") fillColor = color;
@@ -1831,6 +2235,10 @@ namespace AKDiagrams
                     selectedItem.FillColor = html;
                 }
                 else if (target == "outline" && (selectedItem.Type == "rect" || selectedItem.Type == "ellipse"))
+                {
+                    selectedItem.OutlineColor = html;
+                }
+                else if (target == "line" && (selectedItem.Type == "rect" || selectedItem.Type == "ellipse"))
                 {
                     selectedItem.OutlineColor = html;
                 }
@@ -1920,9 +2328,10 @@ namespace AKDiagrams
 
         private void ApplyPickedColor(Color color)
         {
-            var target = Convert.ToString(colorTargetCombo.SelectedItem).ToLowerInvariant();
+            var target = activeColorPickTarget;
             SetColor(target, color, true);
             SetStatus("Picked " + ColorTranslator.ToHtml(color) + " for " + target);
+            SetTool(toolBeforeColorPick);
         }
 
         private DiagramItem FindItemAt(PointF point)
@@ -1957,9 +2366,10 @@ namespace AKDiagrams
             }
             if (item.Type == "wire")
             {
-                for (var i = 0; i < item.Points.Count - 1; i++)
+                var points = GetWireDisplayPoints(item);
+                for (var i = 0; i < points.Count - 1; i++)
                 {
-                    if (DistanceToSegment(point, item.Points[i].ToPointF(), item.Points[i + 1].ToPointF()) <= Math.Max(7f, item.LineWidth + 3f))
+                    if (DistanceToSegment(point, points[i], points[i + 1]) <= Math.Max(7f, item.LineWidth + 3f))
                     {
                         return true;
                     }
@@ -1981,14 +2391,15 @@ namespace AKDiagrams
             }
             if (item.Type == "wire")
             {
-                if (item.Points.Count == 0)
+                var points = GetWireDisplayPoints(item);
+                if (points.Count == 0)
                 {
                     return RectangleF.Empty;
                 }
-                var minX = item.Points.Min(p => p.X);
-                var minY = item.Points.Min(p => p.Y);
-                var maxX = item.Points.Max(p => p.X);
-                var maxY = item.Points.Max(p => p.Y);
+                var minX = points.Min(p => p.X);
+                var minY = points.Min(p => p.Y);
+                var maxX = points.Max(p => p.X);
+                var maxY = points.Max(p => p.Y);
                 return new RectangleF(minX, minY, Math.Max(1f, maxX - minX), Math.Max(1f, maxY - minY));
             }
             if (item.Type == "text" && item.Points.Count > 0)
@@ -2439,9 +2850,21 @@ namespace AKDiagrams
                 else if (item.Type == "wire" && item.Points.Count >= 2)
                 {
                     UpdateWireConnectionPoints(item);
-                    var points = string.Join(" ", item.Points.Select(p => string.Format("{0:F2},{1:F2}", p.X, p.Y)));
                     var marker = item.Arrow ? " marker-end=\"url(#ak-arrow)\"" : string.Empty;
-                    builder.AppendLine(string.Format("<polyline points=\"{0}\" fill=\"none\" stroke=\"{1}\" stroke-width=\"{2:F2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"{3}/>", points, item.LineColor, item.LineWidth, marker));
+                    var displayPoints = GetWireDisplayPoints(item);
+                    if (displayPoints.Count < 2)
+                    {
+                        continue;
+                    }
+                    if (IsCurvedWire(item) && displayPoints.Count >= 3)
+                    {
+                        builder.AppendLine(string.Format("<path d=\"{0}\" fill=\"none\" stroke=\"{1}\" stroke-width=\"{2:F2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"{3}/>", BuildCurvedSvgPath(displayPoints), item.LineColor, item.LineWidth, marker));
+                    }
+                    else
+                    {
+                        var points = string.Join(" ", displayPoints.Select(p => string.Format("{0:F2},{1:F2}", p.X, p.Y)));
+                        builder.AppendLine(string.Format("<polyline points=\"{0}\" fill=\"none\" stroke=\"{1}\" stroke-width=\"{2:F2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"{3}/>", points, item.LineColor, item.LineWidth, marker));
+                    }
                 }
                 else if (item.Type == "text" && item.Points.Count >= 1)
                 {
@@ -2462,6 +2885,25 @@ namespace AKDiagrams
         private void AppendSvgText(StringBuilder builder, float x, float y, DiagramItem item)
         {
             builder.AppendLine(string.Format("<text x=\"{0:F2}\" y=\"{1:F2}\" fill=\"{2}\" font-family=\"{3}\" font-size=\"18\" text-anchor=\"middle\" dominant-baseline=\"middle\">{4}</text>", x, y, item.TextColor, EscapeXml(item.FontFamily), EscapeXml(item.Label ?? string.Empty)));
+        }
+
+        private string BuildCurvedSvgPath(List<PointF> points)
+        {
+            var builder = new StringBuilder();
+            builder.AppendFormat("M {0:F2},{1:F2}", points[0].X, points[0].Y);
+            for (var i = 1; i < points.Count; i++)
+            {
+                var previous = points[i - 1];
+                var current = points[i];
+                var midX = (previous.X + current.X) / 2f;
+                var midY = (previous.Y + current.Y) / 2f;
+                builder.AppendFormat(" Q {0:F2},{1:F2} {2:F2},{3:F2}", previous.X, previous.Y, midX, midY);
+                if (i == points.Count - 1)
+                {
+                    builder.AppendFormat(" T {0:F2},{1:F2}", current.X, current.Y);
+                }
+            }
+            return builder.ToString();
         }
 
         private string EscapeXml(string value)

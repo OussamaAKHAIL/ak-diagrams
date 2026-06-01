@@ -13,11 +13,15 @@ It is designed for people who want something faster and smaller than a full CAD 
 ## Features
 
 - Draw blocks, devices, text labels, reference images, and multi-turn wires
+- Zoom with the mouse wheel or touchpad
 - Edit wire turns by dragging individual wire points
 - Connect wire endpoints to blocks/devices/images so wires follow when connected objects move
+- Keep wires orthogonal by default, with optional angled or curved modes
 - Resize blocks, devices, and images with selection handles or numeric properties
 - Change fill, outline, line, text, and background colors
-- Pick colors from the canvas or from inserted reference images
+- Pick colors from the canvas or inserted reference images directly from each color control
+- Use right-click menus for element-specific actions
+- Copy, paste, duplicate, save, open, and zoom with keyboard shortcuts
 - Choose paper-friendly fonts: Times New Roman, Cambria, and Georgia
 - Save editable `.akd` project files
 - Export figures as SVG, PNG, or PDF
@@ -34,12 +38,12 @@ Download or build the executable, then run:
 If you are using the versioned release folders, run:
 
 ```powershell
-.\releases\v2.0.0\ak-diagrams-v2.0.0.exe
+.\releases\v2.1.1\ak-diagrams-v2.1.1.exe
 ```
 
 ## Basic Workflow
 
-1. Select a tool from the toolbar: `Block`, `Device`, `Wire`, `Text`, `Image`, or `Color Picker`.
+1. Select a tool from the toolbar: `Block`, `Device`, `Wire`, `Text`, or `Image`.
 2. Place elements on the canvas.
 3. Use `Select` to move, resize, rename, recolor, or edit properties.
 4. Save the editable project as `.akd`.
@@ -47,7 +51,7 @@ If you are using the versioned release folders, run:
 
 ## Wires
 
-Wires are flexible polylines:
+Wires are orthogonal by default, which keeps turns vertical/horizontal for schematic-style diagrams:
 
 - Click once to start a wire.
 - Click additional points to add turns.
@@ -55,6 +59,19 @@ Wires are flexible polylines:
 - Select a wire and drag any point handle to adjust that turn.
 - Drag a connected endpoint away from its target to disconnect it.
 - Drop a wire endpoint onto a block, device, or image to connect it.
+- Right-click a wire to switch between `Orthogonal Turns`, `Flexible Angles`, and `Extra Flexible Curves`.
+
+## Shortcuts
+
+- `Ctrl+S`: save
+- `Ctrl+O`: open
+- `Ctrl+N`: new diagram
+- `Ctrl+C`: copy selected element
+- `Ctrl+V`: paste
+- `Ctrl+D`: duplicate selected element
+- `Delete`: delete selected element
+- `Ctrl++` / `Ctrl+-`: zoom in/out
+- `Ctrl+0`: reset zoom
 
 ## Images And Color Picking
 
@@ -64,8 +81,8 @@ The image is embedded into the `.akd` file as data, not as a local file path. Th
 
 To sample a color:
 
-1. Choose the target from the color target dropdown: `Fill`, `Outline`, `Line`, `Text`, or `Background`.
-2. Select `Color Picker`.
+1. Click a color control such as `Fill`, `Outline`, `Line`, `Text`, or `Background`.
+2. Choose `Pick from canvas`.
 3. Click the canvas or an inserted image.
 
 ## Building From Source
@@ -85,9 +102,9 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 Build output:
 
 ```text
-dist\v2.0.0\ak-diagrams-v2.0.0.exe
+dist\v2.1.1\ak-diagrams-v2.1.1.exe
 dist\ak-diagrams.exe
-releases\v2.0.0\ak-diagrams-v2.0.0.exe
+releases\v2.1.1\ak-diagrams-v2.1.1.exe
 ```
 
 ## Local Configuration
@@ -116,5 +133,7 @@ Versioned executable builds are stored in `releases/`.
 
 - `v1.0.0`: first public Windows executable
 - `v2.0.0`: flexible wires, connected endpoints, image insertion, color picker, property editing, PNG/PDF export, and high-DPI display improvements
+- `v2.1.0`: zoom, copy/paste, right-click menus, color picking from color controls, and wire mode switching
+- `v2.1.1`: fixed wire preview crash when starting a new wire
 
 For larger public distribution, GitHub Releases is the recommended place to attach `.exe` files.
