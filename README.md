@@ -70,6 +70,8 @@ Wires are orthogonal by default, which keeps turns vertical/horizontal for schem
 - `Ctrl+N`: new diagram
 - `Ctrl+C`: copy selected element
 - `Ctrl+V`: paste
+- `Ctrl+Z`: undo
+- `Ctrl+Y`: redo
 - `Ctrl+D`: duplicate selected element
 - `Delete`: delete selected element
 - `Ctrl++` / `Ctrl+-`: zoom in/out
@@ -137,5 +139,7 @@ Versioned executable builds are stored in `releases/`.
 - `v2.0.0`: flexible wires, connected endpoints, image insertion, color picker, property editing, PNG/PDF export, and high-DPI display improvements
 - `v2.1.0`: zoom, copy/paste, right-click menus, color picking from color controls, and wire mode switching
 - `v2.1.1`: fixed wire preview crash when starting a new wire
+- `v2.2.0`:Fixed orthogonal endpoint routing for wires, Undo/Redo history,icon (logo).
+
 
 For larger public distribution, GitHub Releases is the recommended place to attach `.exe` files.
