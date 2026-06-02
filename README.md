@@ -1,4 +1,4 @@
-# AKDiagrams
+# AK-Diagrams
 
 <img src="media/logo%201.png" alt="AKDiagrams Logo" width="100"/>
 
