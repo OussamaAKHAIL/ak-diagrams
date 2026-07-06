@@ -1,4 +1,4 @@
-![ak-diagrams logo](media/logo.png)
+![ak-diagrams logo](media/logo 1_cropped.png)
 
 # ak-diagrams
 
