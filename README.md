@@ -1,101 +1,72 @@
-# AK-Diagrams
+![ak-diagrams logo](media/logo.png)
 
-<img src="media/logo%201.png" alt="AKDiagrams Logo" width="150"/>
+# ak-diagrams
 
 ![Language](https://img.shields.io/badge/Language-C%23-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows-blue.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Version](https://img.shields.io/badge/Version-2.2.0-orange.svg)
+![Version](https://img.shields.io/badge/Version-3.0.1-orange.svg)
 ![Status](https://img.shields.io/badge/Status-Active%20Development-brightgreen.svg)
 
-`ak-diagrams` is a lightweight Windows diagram editor for clean technical schematics, block diagrams, research-paper figures, and electronics-style system sketches.
+`ak-diagrams` is a lightweight Windows diagram editor for research-paper schematics, block diagrams, technical figures, and electronics-style layouts.
 
-It is designed for people who want something faster and smaller than a full CAD or drawing suite, while still keeping diagrams editable, structured, and exportable.
+It focuses on fast editing, clear exports, and a clean workflow for diagrams that need to stay readable in papers and reports.
 
-## Features
+## Overview
 
-- Draw blocks, devices, text labels, reference images, and multi-turn wires
-- Zoom with the mouse wheel or touchpad
-- Edit wire turns by dragging individual wire points
-- Connect wire endpoints to blocks/devices/images so wires follow when connected objects move
-- Keep wires orthogonal by default, with optional angled or curved modes
-- Resize blocks, devices, and images with selection handles or numeric properties
-- Change fill, outline, line, text, and background colors
-- Pick colors from the canvas or inserted reference images directly from each color control
-- Use right-click menus for element-specific actions
-- Copy, paste, duplicate, save, open, and zoom with keyboard shortcuts
-- Choose paper-friendly fonts: Times New Roman, Cambria, and Georgia
-- Save editable `.akd` project files
-- Export figures as SVG, PNG, or PDF
-- Uses local `.env` settings without exposing private machine paths in Git
+- Draw rectangles, circles, wires, text labels, and reference images
+- Keep wire endpoints connected while moving blocks and devices
+- Route wires with orthogonal turns by default, plus flexible and curved modes
+- Edit line style, line width, colors, font, and background from the UI
+- Import or build custom component libraries and reuse them later
+- Export editable projects as `.akd`, and final figures as SVG, PNG, or PDF
 
 ## Quickstart
 
-Download or build the executable, then run:
+1. Download the latest executable from `dist\ak-diagrams.exe` or a versioned release folder.
+2. Run the app and choose a tool from the toolbar or the `Components` sidebar.
+3. Place shapes, wires, text, or images on the canvas.
+4. Use `Select` to move items, edit properties, and reconnect wires.
+5. Save your diagram as `.akd`, then export SVG/PNG/PDF when you are done.
 
-```powershell
-.\dist\ak-diagrams.exe
-```
+## Components Sidebar
 
-If you are using the versioned release folders, run:
+Open `Components` from the top menu to show the left sidebar.
 
-```powershell
-.\releases\v2.1.1\ak-diagrams-v2.1.1.exe
-```
+- `Shapes` contains rectangle, circle, and square presets.
+- `Lines` contains solid, dashed, and dotted wire presets.
+- `Custom` lets you create a new component, import a zip package, or export your library.
 
-## Basic Workflow
+Custom components are saved as a zip package so you can share them with other users of `ak-diagrams`.
 
-1. Select a tool from the toolbar: `Block`, `Device`, `Wire`, `Text`, or `Image`.
-2. Place elements on the canvas.
-3. Use `Select` to move, resize, rename, recolor, or edit properties.
-4. Save the editable project as `.akd`.
-5. Export the final figure as SVG, PNG, or PDF.
+## Wire Editing
 
-## Wires
-
-Wires are orthogonal by default, which keeps turns vertical/horizontal for schematic-style diagrams:
-
-- Click once to start a wire.
-- Click additional points to add turns.
-- Double-click, right-click, press `Enter`, or use `Finish Wire` to complete it.
-- Select a wire and drag any point handle to adjust that turn.
-- Drag a connected endpoint away from its target to disconnect it.
-- Drop a wire endpoint onto a block, device, or image to connect it.
-- Right-click a wire to switch between `Orthogonal Turns`, `Flexible Angles`, and `Extra Flexible Curves`.
+- Drag wire turns in orthogonal mode to rearrange the path while keeping right angles.
+- Right-click a wire to switch between orthogonal, angled, and curved modes.
+- Drag a connected endpoint away from a block or device to disconnect it.
+- Drag the endpoint back onto a connectable object to reconnect it.
 
 ## Shortcuts
 
 - `Ctrl+S`: save
 - `Ctrl+O`: open
 - `Ctrl+N`: new diagram
-- `Ctrl+C`: copy selected element
+- `Ctrl+C`: copy
 - `Ctrl+V`: paste
+- `Ctrl+D`: duplicate
 - `Ctrl+Z`: undo
 - `Ctrl+Y`: redo
-- `Ctrl+D`: duplicate selected element
-- `Delete`: delete selected element
+- `Delete`: delete selected item
 - `Ctrl++` / `Ctrl+-`: zoom in/out
 - `Ctrl+0`: reset zoom
-
-## Images And Color Picking
-
-Use the `Image` tool or `Insert > Image` to add a PNG, JPG, JPEG, or BMP reference image.
-
-The image is embedded into the `.akd` file as data, not as a local file path. This keeps projects portable and avoids exposing your private folder structure.
-
-To sample a color:
-
-1. Click a color control such as `Fill`, `Outline`, `Line`, `Text`, or `Background`.
-2. Choose `Pick from canvas`.
-3. Click the canvas or an inserted image.
 
 ## Building From Source
 
 Requirements:
 
 - Windows
-- .NET Framework compiler included with Windows at `Microsoft.NET\Framework` or `Microsoft.NET\Framework64`
 - PowerShell
+- .NET Framework compiler from `Microsoft.NET\Framework` or `Microsoft.NET\Framework64`
 
 Build:
 
@@ -106,10 +77,12 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 Build output:
 
 ```text
-dist\v2.1.1\ak-diagrams-v2.1.1.exe
+dist\v3.0.1\ak-diagrams-v3.0.1.exe
 dist\ak-diagrams.exe
-releases\v2.1.1\ak-diagrams-v2.1.1.exe
+releases\v3.0.1\ak-diagrams-v3.0.1.exe
 ```
+
+The build also generates the app icon next to the executable so the program looks like a normal Windows app.
 
 ## Local Configuration
 
@@ -129,17 +102,18 @@ AK_DIAGRAMS_DEFAULT_DIR=./my-diagrams
 
 `.env` is ignored by Git, so private paths stay local. Commit `.env.example`, not `.env`.
 
-When running from source, place `.env` in the project folder. When running only a copied executable, place `.env` next to that executable.
-
 ## Version History
 
 Versioned executable builds are stored in `releases/`.
 
-- `v1.0.0`: first public Windows executable
+- `v3.0.1`: transparent component studio with straight lines, editable shapes, and cropped PNG previews
+- `v3.0.0`: orthogonal wire editing, line styles, a Components sidebar, and reusable component packages
+- `v2.2.0`: stable pre-`v3` base release
+- `v2.1.1`: fixed the wire preview crash when starting a new wire
+- `v2.1.0`: zoom, shortcuts, right-click menus, color picking, and wire mode switching
 - `v2.0.0`: flexible wires, connected endpoints, image insertion, color picker, property editing, PNG/PDF export, and high-DPI display improvements
-- `v2.1.0`: zoom, copy/paste, right-click menus, color picking from color controls, and wire mode switching
-- `v2.1.1`: fixed wire preview crash when starting a new wire
-- `v2.2.0`:Fixed orthogonal endpoint routing for wires, Undo/Redo history,icon (logo).
+- `v1.0.0`: initial public Windows executable
 
+## Project Goal
 
-For larger public distribution, GitHub Releases is the recommended place to attach `.exe` files.
+`ak-diagrams` is meant to stay small, practical, and easy to share, while still being powerful enough for clean schematic-style figures.

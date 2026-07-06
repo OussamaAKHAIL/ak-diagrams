@@ -2,6 +2,7 @@
 dist/
 bin/
 obj/
+ak-diagrams.ico
 *.exe
 *.dll
 *.pdb

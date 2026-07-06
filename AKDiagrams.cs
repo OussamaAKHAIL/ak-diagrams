@@ -16,7 +16,7 @@ namespace AKDiagrams
     public static class AppInfo
     {
         public const string Name = "ak-diagrams";
-        public const string Version = "2.1.1";
+        public const string Version = "3.0.1";
     }
 
     public enum ToolKind
@@ -118,16 +118,26 @@ namespace AKDiagrams
         [DataMember]
         public float AnchorY { get; set; }
 
+        [DataMember]
+        public string Side { get; set; }
+
+        [DataMember]
+        public int AnchorIndex { get; set; }
+
         public WireConnection()
         {
             ElementId = string.Empty;
+            Side = string.Empty;
+            AnchorIndex = -1;
         }
 
-        public WireConnection(string elementId, float anchorX, float anchorY)
+        public WireConnection(string elementId, float anchorX, float anchorY, string side)
         {
             ElementId = elementId;
             AnchorX = anchorX;
             AnchorY = anchorY;
+            Side = side;
+            AnchorIndex = -1;
         }
     }
 
@@ -171,6 +181,9 @@ namespace AKDiagrams
         public bool Arrow { get; set; }
 
         [DataMember]
+        public string LineStyle { get; set; }
+
+        [DataMember]
         public string FontFamily { get; set; }
 
         [DataMember]
@@ -191,6 +204,9 @@ namespace AKDiagrams
         [DataMember]
         public WireConnection EndConnection { get; set; }
 
+        [DataMember]
+        public List<FloatPoint> ConnectionPoints { get; set; }
+
         public DiagramItem()
         {
             Id = string.Empty;
@@ -205,6 +221,7 @@ namespace AKDiagrams
             TextColor = "#111111";
             LineWidth = 2f;
             Arrow = false;
+            LineStyle = "solid";
             FontFamily = "Times New Roman";
             WireMode = "orthogonal";
             ImageDataBase64 = string.Empty;
@@ -212,6 +229,7 @@ namespace AKDiagrams
             SourceFileName = string.Empty;
             StartConnection = null;
             EndConnection = null;
+            ConnectionPoints = new List<FloatPoint>();
         }
     }
 
@@ -250,6 +268,18 @@ namespace AKDiagrams
             Name = name;
             Category = category;
             Tool = tool;
+        }
+    }
+
+    public class ComponentButtonDefinition
+    {
+        public string Text { get; private set; }
+        public EventHandler Click { get; private set; }
+
+        public ComponentButtonDefinition(string text, EventHandler click)
+        {
+            Text = text;
+            Click = click;
         }
     }
 
@@ -324,9 +354,11 @@ namespace AKDiagrams
         private readonly ToolStrip toolStrip = new ToolStrip();
         private readonly StatusStrip statusStrip = new StatusStrip();
         private readonly ToolStripStatusLabel statusLabel = new ToolStripStatusLabel();
+        private readonly Panel componentsPanel = new Panel();
         private readonly Panel propertiesPanel = new Panel();
         private readonly Dictionary<ToolKind, ToolStripButton> toolButtons = new Dictionary<ToolKind, ToolStripButton>();
         private readonly List<DiagramItem> items = new List<DiagramItem>();
+        private readonly List<ComponentDefinition> customComponents = new List<ComponentDefinition>();
         private readonly Dictionary<string, Image> imageCache = new Dictionary<string, Image>();
 
         private readonly ToolStripButton fillColorButton = new ToolStripButton("Fill");
@@ -334,15 +366,19 @@ namespace AKDiagrams
         private readonly ToolStripButton lineColorButton = new ToolStripButton("Line");
         private readonly ToolStripButton textColorButton = new ToolStripButton("Text");
         private readonly ToolStripButton backgroundColorButton = new ToolStripButton("Background");
+        private readonly ToolStripButton undoButton = new ToolStripButton("←");
+        private readonly ToolStripButton redoButton = new ToolStripButton("→");
         private readonly ToolStripButton arrowToggleButton = new ToolStripButton("Arrow");
         private readonly ToolStripButton snapToggleButton = new ToolStripButton("Snap");
         private readonly ToolStripButton gridToggleButton = new ToolStripButton("Grid");
+        private FlowLayoutPanel componentsListPanel;
 
         private NumericUpDown xBox;
         private NumericUpDown yBox;
         private NumericUpDown widthBox;
         private NumericUpDown heightBox;
         private NumericUpDown lineWidthBox;
+        private ComboBox lineStyleCombo;
         private ComboBox fontCombo;
         private Button fillPanelButton;
         private Button outlinePanelButton;
@@ -366,10 +402,15 @@ namespace AKDiagrams
         private readonly List<FloatPoint> pendingWirePoints = new List<FloatPoint>();
         private WireConnection pendingStartConnection;
         private DiagramItem copiedItem;
+        private readonly List<string> undoStack = new List<string>();
+        private readonly List<string> redoStack = new List<string>();
+        private const int MaxHistoryStates = 60;
+        private bool restoringHistory;
 
         private bool snapToGrid = true;
         private bool showGrid = true;
         private bool wireArrow = true;
+        private bool forceSquareShape;
         private readonly int gridSize = 20;
         private int nextItemNumber = 1;
 
@@ -379,6 +420,7 @@ namespace AKDiagrams
         private Color textColor = Color.FromArgb(17, 17, 17);
         private Color backgroundColor = Color.FromArgb(248, 248, 248);
         private float lineWidth = 2f;
+        private string lineStyle = "solid";
         private string fontFamily = "Times New Roman";
         private string currentPath = string.Empty;
         private readonly string defaultDialogDirectory;
@@ -394,6 +436,8 @@ namespace AKDiagrams
             StartPosition = FormStartPosition.CenterScreen;
             KeyPreview = true;
             AutoScaleMode = AutoScaleMode.Dpi;
+
+            LoadApplicationIcon();
 
             var appDirectory = AppDomain.CurrentDomain.BaseDirectory;
             var envBaseDirectory = appDirectory;
@@ -413,11 +457,14 @@ namespace AKDiagrams
             defaultDialogDirectory = ResolveDefaultDialogDirectory(envBaseDirectory);
 
             InitializeMenuAndToolbar();
+            InitializeComponentsPanel();
+            LoadCustomComponents();
             InitializeCanvas();
             InitializePropertiesPanel();
             InitializeStatusBar();
             UpdateColorButtons();
             UpdatePropertiesPanel();
+            ClearHistory();
             SetStatus("Ready");
         }
 
@@ -441,6 +488,12 @@ namespace AKDiagrams
             insertMenu.DropDownItems.Add("Image", null, delegate { InsertImageAtCenter(); });
             menuStrip.Items.Add(insertMenu);
 
+            var componentsMenu = new ToolStripMenuItem("Components");
+            componentsMenu.CheckOnClick = true;
+            componentsMenu.Checked = true;
+            componentsMenu.CheckedChanged += delegate { ToggleComponentsPanel(componentsMenu.Checked); };
+            menuStrip.Items.Add(componentsMenu);
+
             Controls.Add(menuStrip);
             MainMenuStrip = menuStrip;
 
@@ -453,6 +506,17 @@ namespace AKDiagrams
             AddToolStripButton("SVG", delegate { ExportSvg(); }, "Export vector SVG");
             AddToolStripButton("PNG", delegate { ExportPng(); }, "Export PNG image");
             AddToolStripButton("PDF", delegate { ExportPdf(); }, "Export PDF");
+
+            toolStrip.Items.Add(new ToolStripSeparator());
+
+            undoButton.ToolTipText = "Undo";
+            undoButton.Enabled = false;
+            undoButton.Click += delegate { Undo(); };
+            redoButton.ToolTipText = "Redo";
+            redoButton.Enabled = false;
+            redoButton.Click += delegate { Redo(); };
+            toolStrip.Items.Add(undoButton);
+            toolStrip.Items.Add(redoButton);
 
             toolStrip.Items.Add(new ToolStripSeparator());
 
@@ -530,6 +594,39 @@ namespace AKDiagrams
             lineWidthBox.Minimum = 1;
             lineWidthBox.Maximum = 24;
 
+            var lineStyleLabel = new Label();
+            lineStyleLabel.Text = "Line style";
+            lineStyleLabel.AutoSize = true;
+            lineStyleLabel.Location = new Point(12, y + 5);
+            propertiesPanel.Controls.Add(lineStyleLabel);
+
+            lineStyleCombo = new ComboBox();
+            lineStyleCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+            lineStyleCombo.Items.AddRange(new object[] { "Solid", "Dashed", "Dotted" });
+            lineStyleCombo.SelectedIndex = 0;
+            lineStyleCombo.SetBounds(95, y, 175, 26);
+            lineStyleCombo.SelectedIndexChanged += delegate
+            {
+                if (updatingProperties)
+                {
+                    return;
+                }
+
+                var style = GetSelectedLineStyle();
+                if (selectedItem != null)
+                {
+                    selectedItem.LineStyle = style;
+                    canvas.Invalidate();
+                    RecordHistory();
+                }
+                else
+                {
+                    lineStyle = style;
+                }
+            };
+            propertiesPanel.Controls.Add(lineStyleCombo);
+            y += 38;
+
             var fontLabel = new Label();
             fontLabel.Text = "Font";
             fontLabel.AutoSize = true;
@@ -574,6 +671,255 @@ namespace AKDiagrams
             deleteButton.SetBounds(144, y + 8, 126, 30);
             deleteButton.Click += delegate { DeleteSelected(); };
             propertiesPanel.Controls.Add(deleteButton);
+        }
+
+        private void InitializeComponentsPanel()
+        {
+            componentsPanel.Dock = DockStyle.Left;
+            componentsPanel.Width = 280;
+            componentsPanel.Padding = new Padding(10);
+            componentsPanel.BackColor = Color.FromArgb(246, 246, 246);
+            componentsPanel.Visible = true;
+            componentsPanel.BorderStyle = BorderStyle.FixedSingle;
+            componentsPanel.AutoScroll = true;
+
+            var headerPanel = new Panel();
+            headerPanel.Dock = DockStyle.Top;
+            headerPanel.Height = 36;
+            headerPanel.BackColor = componentsPanel.BackColor;
+
+            var label = new Label();
+            label.Text = "Components";
+            label.Font = new Font("Segoe UI", 12f, FontStyle.Bold);
+            label.AutoSize = true;
+            label.Location = new Point(10, 8);
+            headerPanel.Controls.Add(label);
+            componentsPanel.Controls.Add(headerPanel);
+
+            componentsListPanel = new FlowLayoutPanel();
+            componentsListPanel.FlowDirection = FlowDirection.TopDown;
+            componentsListPanel.WrapContents = false;
+            componentsListPanel.AutoScroll = true;
+            componentsListPanel.Dock = DockStyle.Fill;
+            componentsListPanel.Padding = new Padding(0, 0, 0, 0);
+            componentsPanel.Controls.Add(componentsListPanel);
+
+            Controls.Add(componentsPanel);
+            componentsPanel.BringToFront();
+            RefreshComponentsPanel();
+        }
+
+        private void ToggleComponentsPanel(bool visible)
+        {
+            componentsPanel.Visible = visible;
+            canvas.Invalidate();
+        }
+
+        private void LoadCustomComponents()
+        {
+            customComponents.Clear();
+            customComponents.AddRange(ComponentRepository.LoadInstalledComponents());
+            RefreshComponentsPanel();
+        }
+
+        private void SaveCustomComponents()
+        {
+            try
+            {
+                var defaultPath = ComponentRepository.GetDefaultPackagePath();
+                ComponentRepository.SavePackage(defaultPath, "ak-diagrams custom components", customComponents);
+            }
+            catch
+            {
+            }
+        }
+
+        private void RefreshComponentsPanel()
+        {
+            if (componentsListPanel == null)
+            {
+                return;
+            }
+
+            componentsListPanel.SuspendLayout();
+            componentsListPanel.Controls.Clear();
+            AddComponentsSection("Shapes", new[]
+            {
+                new ComponentButtonDefinition("Rectangle", delegate
+                {
+                    forceSquareShape = false;
+                    SetTool(ToolKind.Block);
+                }),
+                new ComponentButtonDefinition("Circle", delegate
+                {
+                    forceSquareShape = false;
+                    SetTool(ToolKind.Device);
+                }),
+                new ComponentButtonDefinition("Square", delegate
+                {
+                    SetTool(ToolKind.Block, true);
+                    forceSquareShape = true;
+                })
+            });
+
+            AddComponentsSection("Lines", new[]
+            {
+                new ComponentButtonDefinition("Solid Line", delegate
+                {
+                    SetTool(ToolKind.Wire);
+                    SetSelectedLineStyle("solid");
+                }),
+                new ComponentButtonDefinition("Dashed Line", delegate
+                {
+                    SetTool(ToolKind.Wire);
+                    SetSelectedLineStyle("dash");
+                }),
+                new ComponentButtonDefinition("Dotted Line", delegate
+                {
+                    SetTool(ToolKind.Wire);
+                    SetSelectedLineStyle("dot");
+                })
+            });
+
+            AddComponentsSection("Custom", new[]
+            {
+                new ComponentButtonDefinition("Add New...", delegate
+                {
+                    AddCustomComponent();
+                }),
+                new ComponentButtonDefinition("Import Zip...", delegate
+                {
+                    ImportCustomComponents();
+                }),
+                new ComponentButtonDefinition("Export Zip...", delegate
+                {
+                    ExportCustomComponents();
+                })
+            });
+
+            if (customComponents.Count > 0)
+            {
+                foreach (var categoryGroup in customComponents.GroupBy(component => string.IsNullOrWhiteSpace(component.Category) ? "Custom" : component.Category).OrderBy(group => group.Key))
+                {
+                    var categoryButtons = new List<ComponentButtonDefinition>();
+                    foreach (var component in categoryGroup.OrderBy(component => component.Name))
+                    {
+                        var captured = component;
+                        categoryButtons.Add(new ComponentButtonDefinition(component.Name, delegate
+                        {
+                            InsertCustomComponent(captured, ScreenToDiagram(new PointF(canvas.Width / 2f, canvas.Height / 2f)));
+                        }));
+                    }
+                    AddComponentsSection(categoryGroup.Key, categoryButtons.ToArray());
+                }
+            }
+
+            if (customComponents.Count == 0)
+            {
+                var hint = new Label();
+                hint.Text = "No custom components yet.";
+                hint.AutoSize = true;
+                hint.Padding = new Padding(4, 10, 4, 4);
+                componentsListPanel.Controls.Add(hint);
+            }
+
+            componentsListPanel.ResumeLayout();
+        }
+
+        private void AddComponentsSection(string title, ComponentButtonDefinition[] buttons)
+        {
+            var group = new GroupBox();
+            group.Text = title;
+            group.AutoSize = true;
+            group.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            group.Width = Math.Max(220, componentsPanel.ClientSize.Width - 24);
+            group.Padding = new Padding(10);
+            group.Margin = new Padding(0, 0, 0, 10);
+
+            var panel = new FlowLayoutPanel();
+            panel.FlowDirection = FlowDirection.TopDown;
+            panel.WrapContents = false;
+            panel.AutoSize = true;
+            panel.Dock = DockStyle.Fill;
+            panel.Padding = new Padding(0);
+
+            foreach (var entry in buttons)
+            {
+                var button = new Button();
+                button.Text = entry.Text;
+                button.Width = Math.Max(180, componentsPanel.ClientSize.Width - 56);
+                button.Height = 30;
+                button.TextAlign = ContentAlignment.MiddleLeft;
+                button.Click += entry.Click;
+                panel.Controls.Add(button);
+            }
+
+            group.Controls.Add(panel);
+            componentsListPanel.Controls.Add(group);
+        }
+
+        private void AddCustomComponent()
+        {
+            using (var editor = new ComponentEditorForm())
+            {
+                if (editor.ShowDialog(this) != DialogResult.OK || editor.Result == null)
+                {
+                    return;
+                }
+
+                customComponents.Add(editor.Result);
+                SaveCustomComponents();
+                RefreshComponentsPanel();
+                SetStatus("Custom component added");
+            }
+        }
+
+        private void ImportCustomComponents()
+        {
+            using (var dialog = new OpenFileDialog())
+            {
+                dialog.Filter = "Component package (*.zip)|*.zip|All files (*.*)|*.*";
+                dialog.Title = "Import component package";
+                ConfigureDialogInitialDirectory(dialog);
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    return;
+                }
+
+                var imported = ComponentRepository.LoadPackage(dialog.FileName);
+                if (imported.Count == 0)
+                {
+                    MessageBox.Show(this, "No components were found in that package.", AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                foreach (var component in imported)
+                {
+                    customComponents.Add(component);
+                }
+
+                SaveCustomComponents();
+                RefreshComponentsPanel();
+                SetStatus("Imported " + imported.Count + " component(s)");
+            }
+        }
+
+        private void ExportCustomComponents()
+        {
+            using (var dialog = new SaveFileDialog())
+            {
+                dialog.Filter = "Component package (*.zip)|*.zip";
+                dialog.Title = "Export component package";
+                dialog.DefaultExt = "zip";
+                ConfigureDialogInitialDirectory(dialog);
+                if (dialog.ShowDialog(this) != DialogResult.OK)
+                {
+                    return;
+                }
+
+                ComponentRepository.SavePackage(dialog.FileName, "ak-diagrams custom components", customComponents);
+                SetStatus("Exported components");
+            }
         }
 
         private NumericUpDown AddNumberField(string label, ref int y)
@@ -646,6 +992,16 @@ namespace AKDiagrams
             if (e.KeyCode == Keys.Delete)
             {
                 DeleteSelected();
+                e.Handled = true;
+            }
+            else if (e.Control && e.KeyCode == Keys.Z)
+            {
+                Undo();
+                e.Handled = true;
+            }
+            else if (e.Control && e.KeyCode == Keys.Y)
+            {
+                Redo();
                 e.Handled = true;
             }
             else if (e.Control && e.KeyCode == Keys.S)
@@ -732,6 +1088,15 @@ namespace AKDiagrams
 
         private void SetTool(ToolKind kind)
         {
+            SetTool(kind, false);
+        }
+
+        private void SetTool(ToolKind kind, bool preserveShapePreset)
+        {
+            if (!preserveShapePreset)
+            {
+                forceSquareShape = false;
+            }
             currentTool = kind;
             foreach (var pair in toolButtons)
             {
@@ -746,9 +1111,181 @@ namespace AKDiagrams
             canvas.Invalidate();
         }
 
+        private bool IsShapeTool(ToolKind kind)
+        {
+            return kind == ToolKind.Block || kind == ToolKind.Device;
+        }
+
+        private RectangleF NormalizeSquareRect(PointF start, PointF end)
+        {
+            var rect = NormalizeRect(start, end);
+            var size = Math.Min(rect.Width, rect.Height);
+            if (size <= 0f)
+            {
+                return rect;
+            }
+
+            var x = rect.X;
+            var y = rect.Y;
+            if (end.X < start.X)
+            {
+                x = start.X - size;
+            }
+            if (end.Y < start.Y)
+            {
+                y = start.Y - size;
+            }
+            return new RectangleF(x, y, size, size);
+        }
+
         private void SetStatus(string text)
         {
             statusLabel.Text = text;
+        }
+
+        private void LoadApplicationIcon()
+        {
+            try
+            {
+                var iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ak-diagrams.ico");
+                if (File.Exists(iconPath))
+                {
+                    Icon = new Icon(iconPath);
+                    return;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private string CaptureSnapshot()
+        {
+            var document = new DiagramDocument();
+            document.App = AppInfo.Name;
+            document.Version = AppInfo.Version;
+            document.BackgroundColor = ColorTranslator.ToHtml(backgroundColor);
+            document.Items = items;
+            var serializer = new DataContractJsonSerializer(typeof(DiagramDocument));
+            using (var stream = new MemoryStream())
+            {
+                serializer.WriteObject(stream, document);
+                return Encoding.UTF8.GetString(stream.ToArray());
+            }
+        }
+
+        private void RestoreSnapshot(string snapshot)
+        {
+            if (string.IsNullOrWhiteSpace(snapshot))
+            {
+                return;
+            }
+
+            restoringHistory = true;
+            try
+            {
+                using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(snapshot)))
+                {
+                    var serializer = new DataContractJsonSerializer(typeof(DiagramDocument));
+                    var document = serializer.ReadObject(stream) as DiagramDocument;
+                    if (document == null)
+                    {
+                        return;
+                    }
+                    ClearImages();
+                    items.Clear();
+                    items.AddRange(document.Items ?? new List<DiagramItem>());
+                    backgroundColor = ParseColor(document.BackgroundColor, Color.FromArgb(248, 248, 248));
+                    selectedItem = null;
+                    pendingWirePoints.Clear();
+                    pendingStartConnection = null;
+                    dragKind = DragKind.None;
+                    currentPath = string.Empty;
+                    nextItemNumber = GetNextItemNumber();
+                    UpdateColorButtons();
+                    UpdatePropertiesPanel();
+                    canvas.Invalidate();
+                    UpdateUndoRedoButtons();
+                }
+            }
+            finally
+            {
+                restoringHistory = false;
+            }
+        }
+
+        private void ClearHistory()
+        {
+            undoStack.Clear();
+            redoStack.Clear();
+            if (!restoringHistory)
+            {
+                undoStack.Add(CaptureSnapshot());
+            }
+            UpdateUndoRedoButtons();
+        }
+
+        private void RecordHistory()
+        {
+            if (restoringHistory)
+            {
+                return;
+            }
+
+            var snapshot = CaptureSnapshot();
+            if (undoStack.Count > 0 && undoStack[undoStack.Count - 1] == snapshot)
+            {
+                UpdateUndoRedoButtons();
+                return;
+            }
+
+            undoStack.Add(snapshot);
+            if (undoStack.Count > MaxHistoryStates)
+            {
+                undoStack.RemoveAt(0);
+            }
+            redoStack.Clear();
+            UpdateUndoRedoButtons();
+        }
+
+        private void Undo()
+        {
+            if (undoStack.Count <= 1)
+            {
+                return;
+            }
+
+            var current = undoStack[undoStack.Count - 1];
+            undoStack.RemoveAt(undoStack.Count - 1);
+            redoStack.Add(current);
+            RestoreSnapshot(undoStack[undoStack.Count - 1]);
+            SetStatus("Undo");
+        }
+
+        private void Redo()
+        {
+            if (redoStack.Count == 0)
+            {
+                return;
+            }
+
+            var snapshot = redoStack[redoStack.Count - 1];
+            redoStack.RemoveAt(redoStack.Count - 1);
+            undoStack.Add(snapshot);
+            RestoreSnapshot(snapshot);
+            SetStatus("Redo");
+        }
+
+        private void UpdateUndoRedoButtons()
+        {
+            if (undoButton != null)
+            {
+                undoButton.Enabled = undoStack.Count > 1;
+            }
+            if (redoButton != null)
+            {
+                redoButton.Enabled = redoStack.Count > 0;
+            }
         }
 
         private PointF ScreenToDiagram(PointF point)
@@ -835,7 +1372,7 @@ namespace AKDiagrams
                 return;
             }
 
-            if (currentTool == ToolKind.Block || currentTool == ToolKind.Device)
+            if (IsShapeTool(currentTool))
             {
                 drawStart = point;
                 canvas.Invalidate();
@@ -915,9 +1452,9 @@ namespace AKDiagrams
         {
             var point = Snap(ScreenToDiagram(new PointF(e.X, e.Y)));
 
-            if ((currentTool == ToolKind.Block || currentTool == ToolKind.Device) && drawStart != null)
+            if (IsShapeTool(currentTool) && drawStart != null)
             {
-                var rect = NormalizeRect(drawStart.Value, point);
+                var rect = forceSquareShape ? NormalizeSquareRect(drawStart.Value, point) : NormalizeRect(drawStart.Value, point);
                 drawStart = null;
                 if (rect.Width >= 14f && rect.Height >= 14f)
                 {
@@ -934,6 +1471,7 @@ namespace AKDiagrams
 
             if (dragKind != DragKind.None && movedInDrag)
             {
+                RecordHistory();
                 SetStatus("Updated selection");
             }
 
@@ -974,6 +1512,7 @@ namespace AKDiagrams
             {
                 if (InsertWireTurnAt(selectedItem, point))
                 {
+                    RecordHistory();
                     SetStatus("Wire turn added");
                     canvas.Invalidate();
                     return;
@@ -1073,6 +1612,11 @@ namespace AKDiagrams
                     wireModeMenu.DropDownItems.Add("Flexible Angles", null, delegate { SetSelectedWireMode("angled"); });
                     wireModeMenu.DropDownItems.Add("Extra Flexible Curves", null, delegate { SetSelectedWireMode("curved"); });
                     menu.Items.Add(wireModeMenu);
+                    var lineStyleMenu = new ToolStripMenuItem("Line Style");
+                    lineStyleMenu.DropDownItems.Add("Solid", null, delegate { SetSelectedLineStyle("solid"); });
+                    lineStyleMenu.DropDownItems.Add("Dashed", null, delegate { SetSelectedLineStyle("dash"); });
+                    lineStyleMenu.DropDownItems.Add("Dotted", null, delegate { SetSelectedLineStyle("dot"); });
+                    menu.Items.Add(lineStyleMenu);
                     menu.Items.Add("Add Turn Here", null, delegate
                     {
                         if (InsertWireTurnAt(selectedItem, diagramPoint))
@@ -1114,6 +1658,24 @@ namespace AKDiagrams
             }
 
             menu.Show(canvas, new Point((int)screenPoint.X, (int)screenPoint.Y));
+        }
+
+        private void SetSelectedLineStyle(string style)
+        {
+            var normalized = NormalizeLineStyle(style);
+            if (selectedItem != null)
+            {
+                selectedItem.LineStyle = normalized;
+                canvas.Invalidate();
+                RecordHistory();
+                return;
+            }
+
+            lineStyle = normalized;
+            if (lineStyleCombo != null)
+            {
+                lineStyleCombo.SelectedItem = StyleDisplayName(lineStyle);
+            }
         }
 
         private void ShowColorMenu(string target, Control control, PointF screenPoint)
@@ -1163,6 +1725,7 @@ namespace AKDiagrams
             UpdatePropertiesPanel();
             SetStatus("Pasted " + pasted.Type);
             canvas.Invalidate();
+            RecordHistory();
         }
 
         private DiagramItem CloneItem(DiagramItem source, bool assignNewId)
@@ -1180,11 +1743,13 @@ namespace AKDiagrams
             clone.TextColor = source.TextColor;
             clone.LineWidth = source.LineWidth;
             clone.Arrow = source.Arrow;
+            clone.LineStyle = source.LineStyle;
             clone.FontFamily = source.FontFamily;
             clone.WireMode = string.IsNullOrWhiteSpace(source.WireMode) ? "orthogonal" : source.WireMode;
             clone.ImageDataBase64 = source.ImageDataBase64;
             clone.ImageExtension = source.ImageExtension;
             clone.SourceFileName = source.SourceFileName;
+            clone.ConnectionPoints = ClonePoints(source.ConnectionPoints);
             clone.StartConnection = null;
             clone.EndConnection = null;
             return clone;
@@ -1212,6 +1777,7 @@ namespace AKDiagrams
             items.Remove(selectedItem);
             items.Add(selectedItem);
             canvas.Invalidate();
+            RecordHistory();
         }
 
         private void SendSelectedToBack()
@@ -1223,6 +1789,7 @@ namespace AKDiagrams
             items.Remove(selectedItem);
             items.Insert(0, selectedItem);
             canvas.Invalidate();
+            RecordHistory();
         }
 
         private void SetSelectedWireMode(string mode)
@@ -1234,6 +1801,7 @@ namespace AKDiagrams
             selectedItem.WireMode = mode;
             SetStatus("Wire mode: " + mode);
             canvas.Invalidate();
+            RecordHistory();
         }
 
         private void AddShape(string type, RectangleF rect)
@@ -1248,11 +1816,13 @@ namespace AKDiagrams
             item.OutlineColor = ColorTranslator.ToHtml(outlineColor);
             item.TextColor = ColorTranslator.ToHtml(textColor);
             item.LineWidth = lineWidth;
+            item.LineStyle = lineStyle;
             item.FontFamily = fontFamily;
             items.Add(item);
             selectedItem = item;
             UpdatePropertiesPanel();
             SetStatus((type == "rect" ? "Block" : "Device") + " added");
+            RecordHistory();
         }
 
         private void AddText(PointF point, string text)
@@ -1265,11 +1835,13 @@ namespace AKDiagrams
             item.Label = text;
             item.TextColor = ColorTranslator.ToHtml(textColor);
             item.FontFamily = fontFamily;
+            item.LineStyle = lineStyle;
             items.Add(item);
             selectedItem = item;
             UpdatePropertiesPanel();
             SetStatus("Text added");
             canvas.Invalidate();
+            RecordHistory();
         }
 
         private void AddPendingWirePoint(PointF point)
@@ -1316,6 +1888,7 @@ namespace AKDiagrams
             item.LineWidth = lineWidth;
             item.Arrow = wireArrow;
             item.WireMode = "orthogonal";
+            item.LineStyle = lineStyle;
             item.StartConnection = pendingStartConnection;
             item.EndConnection = CreateConnectionAt(item.Points[item.Points.Count - 1].ToPointF());
             if (item.EndConnection != null)
@@ -1330,6 +1903,7 @@ namespace AKDiagrams
             UpdatePropertiesPanel();
             SetStatus("Wire added");
             canvas.Invalidate();
+            RecordHistory();
         }
 
         private void CancelPendingWire()
@@ -1387,17 +1961,93 @@ namespace AKDiagrams
                     item.ImageDataBase64 = Convert.ToBase64String(bytes);
                     item.LineColor = ColorTranslator.ToHtml(outlineColor);
                     item.LineWidth = 1f;
+                    item.LineStyle = lineStyle;
                     items.Add(item);
                     imageCache[item.Id] = image;
                     selectedItem = item;
                     UpdatePropertiesPanel();
                     SetStatus("Image added");
                     canvas.Invalidate();
+                    RecordHistory();
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show(this, "Could not insert image:\n" + ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
+            }
+        }
+
+        private void InsertCustomComponent(ComponentDefinition component, PointF point)
+        {
+            if (component == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var previewImage = DecodeComponentPreview(component);
+                if (previewImage == null)
+                {
+                    return;
+                }
+
+                var maxWidth = 320f;
+                var maxHeight = 220f;
+                var width = (float)previewImage.Width;
+                var height = (float)previewImage.Height;
+                var scale = Math.Min(1f, Math.Min(maxWidth / width, maxHeight / height));
+                width *= scale;
+                height *= scale;
+
+                var item = new DiagramItem();
+                item.Id = CreateItemId();
+                item.Type = "image";
+                item.Category = string.IsNullOrWhiteSpace(component.Category) ? "Custom" : component.Category;
+                item.Bounds = new FloatRect(point.X - width / 2f, point.Y - height / 2f, width, height);
+                item.SourceFileName = component.Name;
+                item.ImageExtension = "png";
+                item.ImageDataBase64 = component.PreviewBase64;
+                item.LineColor = ColorTranslator.ToHtml(outlineColor);
+                item.LineWidth = 1f;
+                item.LineStyle = "solid";
+                item.ConnectionPoints = ClonePoints(component.ConnectionPoints);
+
+                items.Add(item);
+                imageCache[item.Id] = previewImage;
+                selectedItem = item;
+                UpdatePropertiesPanel();
+                SetStatus("Component added");
+                canvas.Invalidate();
+                RecordHistory();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Could not add component:\n" + ex.Message, AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private Image DecodeComponentPreview(ComponentDefinition component)
+        {
+            if (component == null || string.IsNullOrWhiteSpace(component.PreviewBase64))
+            {
+                return null;
+            }
+
+            try
+            {
+                var bytes = Convert.FromBase64String(component.PreviewBase64);
+                using (var stream = new MemoryStream(bytes))
+                {
+                    using (var loadedImage = Image.FromStream(stream))
+                    {
+                        return new Bitmap(loadedImage);
+                    }
+                }
+            }
+            catch
+            {
+                return null;
             }
         }
 
@@ -1422,6 +2072,10 @@ namespace AKDiagrams
         private List<FloatPoint> ClonePoints(List<FloatPoint> source)
         {
             var clone = new List<FloatPoint>();
+            if (source == null)
+            {
+                return clone;
+            }
             foreach (var point in source)
             {
                 clone.Add(new FloatPoint(point.X, point.Y));
@@ -1530,6 +2184,7 @@ namespace AKDiagrams
             {
                 format.Alignment = StringAlignment.Center;
                 format.LineAlignment = StringAlignment.Center;
+                ApplyLineStyle(pen, item.LineStyle);
 
                 if (ellipse)
                 {
@@ -1560,6 +2215,7 @@ namespace AKDiagrams
                 pen.StartCap = LineCap.Round;
                 pen.EndCap = LineCap.Round;
                 pen.LineJoin = LineJoin.Round;
+                ApplyLineStyle(pen, item.LineStyle);
                 if (item.Arrow)
                 {
                     pen.CustomEndCap = new AdjustableArrowCap(4f, 6f, true);
@@ -1591,12 +2247,15 @@ namespace AKDiagrams
             var controlPoints = wire.Points.Select(p => p.ToPointF()).ToList();
             if (IsOrthogonalWire(wire))
             {
-                return BuildOrthogonalDisplayPoints(controlPoints);
+                return BuildOrthogonalDisplayPoints(
+                    controlPoints,
+                    wire.StartConnection == null ? null : wire.StartConnection.Side,
+                    wire.EndConnection == null ? null : wire.EndConnection.Side);
             }
             return controlPoints;
         }
 
-        private List<PointF> BuildOrthogonalDisplayPoints(List<PointF> controlPoints)
+        private List<PointF> BuildOrthogonalDisplayPoints(List<PointF> controlPoints, string startSide, string endSide)
         {
             var displayPoints = new List<PointF>();
             if (controlPoints.Count == 0)
@@ -1605,15 +2264,70 @@ namespace AKDiagrams
             }
 
             displayPoints.Add(controlPoints[0]);
-            for (var i = 1; i < controlPoints.Count; i++)
+
+            if (!string.IsNullOrWhiteSpace(startSide) && controlPoints.Count > 1)
             {
-                var previous = displayPoints[displayPoints.Count - 1];
-                var target = controlPoints[i];
-                var elbow = new PointF(target.X, previous.Y);
-                AddDistinctPoint(displayPoints, elbow);
-                AddDistinctPoint(displayPoints, target);
+                displayPoints.Add(OffsetFromSide(controlPoints[0], startSide, 14f));
             }
+
+            for (var i = 1; i < controlPoints.Count - 1; i++)
+            {
+                AddOrthogonalStep(displayPoints, controlPoints[i]);
+            }
+
+            if (!string.IsNullOrWhiteSpace(endSide) && controlPoints.Count > 1)
+            {
+                AddOrthogonalStep(displayPoints, OffsetFromSide(controlPoints[controlPoints.Count - 1], endSide, 14f));
+                AddDistinctPoint(displayPoints, controlPoints[controlPoints.Count - 1]);
+            }
+            else if (controlPoints.Count > 1)
+            {
+                AddOrthogonalStep(displayPoints, controlPoints[controlPoints.Count - 1]);
+            }
+
             return displayPoints;
+        }
+
+        private void AddOrthogonalStep(List<PointF> points, PointF target)
+        {
+            if (points.Count == 0)
+            {
+                points.Add(target);
+                return;
+            }
+
+            var previous = points[points.Count - 1];
+            if (Math.Abs(previous.X - target.X) < 0.5f || Math.Abs(previous.Y - target.Y) < 0.5f)
+            {
+                AddDistinctPoint(points, target);
+                return;
+            }
+
+            var elbow = new PointF(target.X, previous.Y);
+            AddDistinctPoint(points, elbow);
+            AddDistinctPoint(points, target);
+        }
+
+        private PointF OffsetFromSide(PointF point, string side, float distance)
+        {
+            var normalized = string.IsNullOrWhiteSpace(side) ? string.Empty : side.ToLowerInvariant();
+            if (normalized == "left")
+            {
+                return new PointF(point.X - distance, point.Y);
+            }
+            if (normalized == "right")
+            {
+                return new PointF(point.X + distance, point.Y);
+            }
+            if (normalized == "top")
+            {
+                return new PointF(point.X, point.Y - distance);
+            }
+            if (normalized == "bottom")
+            {
+                return new PointF(point.X, point.Y + distance);
+            }
+            return point;
         }
 
         private void AddDistinctPoint(List<PointF> points, PointF point)
@@ -1646,6 +2360,7 @@ namespace AKDiagrams
             graphics.DrawImage(image, rect);
             using (var pen = new Pen(ParseColor(item.LineColor, Color.Gray), Math.Max(1f, item.LineWidth)))
             {
+                ApplyLineStyle(pen, item.LineStyle);
                 graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
             }
         }
@@ -1655,10 +2370,10 @@ namespace AKDiagrams
             var snappedPointer = Snap(currentPointer);
             using (var pen = new Pen(lineColor, Math.Max(1f, lineWidth)))
             {
-                pen.DashStyle = DashStyle.Dash;
+                ApplyLineStyle(pen, lineStyle);
                 if (currentTool == ToolKind.Block && drawStart != null)
                 {
-                    var rect = NormalizeRect(drawStart.Value, snappedPointer);
+                    var rect = forceSquareShape ? NormalizeSquareRect(drawStart.Value, snappedPointer) : NormalizeRect(drawStart.Value, snappedPointer);
                     graphics.DrawRectangle(pen, rect.X, rect.Y, rect.Width, rect.Height);
                 }
                 else if (currentTool == ToolKind.Device && drawStart != null)
@@ -1670,7 +2385,7 @@ namespace AKDiagrams
                 {
                     var points = ClonePoints(pendingWirePoints);
                     points.Add(FloatPoint.FromPointF(snappedPointer));
-                    var displayPoints = BuildOrthogonalDisplayPoints(points.Select(p => p.ToPointF()).ToList());
+                    var displayPoints = BuildOrthogonalDisplayPoints(points.Select(p => p.ToPointF()).ToList(), null, null);
                     if (wireArrow)
                     {
                         pen.CustomEndCap = new AdjustableArrowCap(4f, 6f, true);
@@ -1694,6 +2409,23 @@ namespace AKDiagrams
             else
             {
                 graphics.DrawLines(pen, points);
+            }
+        }
+
+        private void ApplyLineStyle(Pen pen, string style)
+        {
+            var normalized = NormalizeLineStyle(style);
+            if (normalized == "dash")
+            {
+                pen.DashStyle = DashStyle.Dash;
+            }
+            else if (normalized == "dot")
+            {
+                pen.DashStyle = DashStyle.Dot;
+            }
+            else
+            {
+                pen.DashStyle = DashStyle.Solid;
             }
         }
 
@@ -1885,6 +2617,31 @@ namespace AKDiagrams
             {
                 return;
             }
+
+            if (IsOrthogonalWire(wire) && index > 0 && index < wire.Points.Count - 1)
+            {
+                var previous = wire.Points[index - 1].ToPointF();
+                var current = wire.Points[index].ToPointF();
+                var next = wire.Points[index + 1].ToPointF();
+                var keepHorizontal = Math.Abs(previous.Y - current.Y) < 0.5f || Math.Abs(next.Y - current.Y) < 0.5f;
+                var keepVertical = Math.Abs(previous.X - current.X) < 0.5f || Math.Abs(next.X - current.X) < 0.5f;
+
+                if (keepHorizontal && !keepVertical)
+                {
+                    point = new PointF(point.X, current.Y);
+                }
+                else if (keepVertical && !keepHorizontal)
+                {
+                    point = new PointF(current.X, point.Y);
+                }
+                else
+                {
+                    var deltaX = Math.Abs(point.X - current.X);
+                    var deltaY = Math.Abs(point.Y - current.Y);
+                    point = deltaX >= deltaY ? new PointF(point.X, current.Y) : new PointF(current.X, point.Y);
+                }
+            }
+
             wire.Points[index] = FloatPoint.FromPointF(point);
         }
 
@@ -1946,7 +2703,10 @@ namespace AKDiagrams
             for (var i = 0; i < wire.Points.Count - 1; i++)
             {
                 var segmentPoints = IsOrthogonalWire(wire)
-                    ? BuildOrthogonalDisplayPoints(new List<PointF> { wire.Points[i].ToPointF(), wire.Points[i + 1].ToPointF() })
+                    ? BuildOrthogonalDisplayPoints(
+                        new List<PointF> { wire.Points[i].ToPointF(), wire.Points[i + 1].ToPointF() },
+                        null,
+                        null)
                     : new List<PointF> { wire.Points[i].ToPointF(), wire.Points[i + 1].ToPointF() };
 
                 var distance = float.MaxValue;
@@ -2023,10 +2783,35 @@ namespace AKDiagrams
                 return null;
             }
 
-            var anchorPoint = ClosestPointOnRect(rect, point);
-            var anchorX = (anchorPoint.X - rect.X) / rect.Width;
-            var anchorY = (anchorPoint.Y - rect.Y) / rect.Height;
-            return new WireConnection(item.Id, anchorX, anchorY);
+            if (item.ConnectionPoints != null && item.ConnectionPoints.Count > 0)
+            {
+                var bestIndex = -1;
+                var bestDistance = float.MaxValue;
+                for (var i = 0; i < item.ConnectionPoints.Count; i++)
+                {
+                    var hotspot = new PointF(rect.X + rect.Width * item.ConnectionPoints[i].X, rect.Y + rect.Height * item.ConnectionPoints[i].Y);
+                    var distance = Distance(point, hotspot);
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        bestIndex = i;
+                    }
+                }
+
+                if (bestIndex >= 0 && bestDistance <= 14f)
+                {
+                    var hotspot = item.ConnectionPoints[bestIndex];
+                    var connection = new WireConnection(item.Id, Clamp(hotspot.X, 0f, 1f), Clamp(hotspot.Y, 0f, 1f), "custom");
+                    connection.AnchorIndex = bestIndex;
+                    return connection;
+                }
+            }
+
+            string side;
+            var anchorPoint = ClosestPointOnRect(rect, point, out side);
+            var anchorX = rect.Width <= 0f ? 0.5f : Clamp((anchorPoint.X - rect.X) / rect.Width, 0f, 1f);
+            var anchorY = rect.Height <= 0f ? 0.5f : Clamp((anchorPoint.Y - rect.Y) / rect.Height, 0f, 1f);
+            return new WireConnection(item.Id, anchorX, anchorY, side);
         }
 
         private PointF GetConnectionPoint(WireConnection connection)
@@ -2037,7 +2822,67 @@ namespace AKDiagrams
                 return PointF.Empty;
             }
             var rect = item.Bounds.ToRectangleF();
-            return new PointF(rect.X + rect.Width * connection.AnchorX, rect.Y + rect.Height * connection.AnchorY);
+            var side = NormalizeSide(connection.Side);
+            if (side == "custom")
+            {
+                if (item.ConnectionPoints != null && connection.AnchorIndex >= 0 && connection.AnchorIndex < item.ConnectionPoints.Count)
+                {
+                    var hotspot = item.ConnectionPoints[connection.AnchorIndex];
+                    return new PointF(rect.X + rect.Width * Clamp(hotspot.X, 0f, 1f), rect.Y + rect.Height * Clamp(hotspot.Y, 0f, 1f));
+                }
+
+                return new PointF(rect.X + rect.Width * Clamp(connection.AnchorX, 0f, 1f), rect.Y + rect.Height * Clamp(connection.AnchorY, 0f, 1f));
+            }
+            if (string.IsNullOrWhiteSpace(side))
+            {
+                if (Math.Abs(connection.AnchorX) < 0.001f) side = "left";
+                else if (Math.Abs(connection.AnchorX - 1f) < 0.001f) side = "right";
+                else if (Math.Abs(connection.AnchorY) < 0.001f) side = "top";
+                else if (Math.Abs(connection.AnchorY - 1f) < 0.001f) side = "bottom";
+            }
+            if (side == "left")
+            {
+                return new PointF(rect.Left, rect.Top + rect.Height * Clamp(connection.AnchorY, 0f, 1f));
+            }
+            if (side == "right")
+            {
+                return new PointF(rect.Right, rect.Top + rect.Height * Clamp(connection.AnchorY, 0f, 1f));
+            }
+            if (side == "top")
+            {
+                return new PointF(rect.Left + rect.Width * Clamp(connection.AnchorX, 0f, 1f), rect.Top);
+            }
+            if (side == "bottom")
+            {
+                return new PointF(rect.Left + rect.Width * Clamp(connection.AnchorX, 0f, 1f), rect.Bottom);
+            }
+            return new PointF(rect.X + rect.Width * Clamp(connection.AnchorX, 0f, 1f), rect.Y + rect.Height * Clamp(connection.AnchorY, 0f, 1f));
+        }
+
+        private string NormalizeSide(string side)
+        {
+            var normalized = string.IsNullOrWhiteSpace(side) ? string.Empty : side.Trim().ToLowerInvariant();
+            if (normalized == "l")
+            {
+                return "left";
+            }
+            if (normalized == "r")
+            {
+                return "right";
+            }
+            if (normalized == "t")
+            {
+                return "top";
+            }
+            if (normalized == "b")
+            {
+                return "bottom";
+            }
+            if (normalized == "left" || normalized == "right" || normalized == "top" || normalized == "bottom")
+            {
+                return normalized;
+            }
+            return string.Empty;
         }
 
         private DiagramItem FindConnectableAt(PointF point)
@@ -2058,7 +2903,7 @@ namespace AKDiagrams
             return null;
         }
 
-        private PointF ClosestPointOnRect(RectangleF rect, PointF point)
+        private PointF ClosestPointOnRect(RectangleF rect, PointF point, out string side)
         {
             var left = Math.Abs(point.X - rect.Left);
             var right = Math.Abs(point.X - rect.Right);
@@ -2067,11 +2912,28 @@ namespace AKDiagrams
             var min = Math.Min(Math.Min(left, right), Math.Min(top, bottom));
             var x = Clamp(point.X, rect.Left, rect.Right);
             var y = Clamp(point.Y, rect.Top, rect.Bottom);
+            side = "top";
 
-            if (min == left) x = rect.Left;
-            else if (min == right) x = rect.Right;
-            else if (min == top) y = rect.Top;
-            else y = rect.Bottom;
+            if (min == left)
+            {
+                x = rect.Left;
+                side = "left";
+            }
+            else if (min == right)
+            {
+                x = rect.Right;
+                side = "right";
+            }
+            else if (min == top)
+            {
+                y = rect.Top;
+                side = "top";
+            }
+            else
+            {
+                y = rect.Bottom;
+                side = "bottom";
+            }
 
             return new PointF(x, y);
         }
@@ -2105,6 +2967,7 @@ namespace AKDiagrams
 
             lineWidth = Math.Max(1f, (float)lineWidthBox.Value);
             canvas.Invalidate();
+            RecordHistory();
         }
 
         private void UpdatePropertiesPanel()
@@ -2122,11 +2985,13 @@ namespace AKDiagrams
             widthBox.Enabled = hasSelection && HasResizableBounds(selectedItem);
             heightBox.Enabled = hasSelection && HasResizableBounds(selectedItem);
             lineWidthBox.Enabled = true;
+            lineStyleCombo.Enabled = true;
             fontCombo.Enabled = hasSelection && selectedItem.Type != "wire" && selectedItem.Type != "image";
 
             if (!hasSelection)
             {
                 lineWidthBox.Value = ToNumeric(lineWidth);
+                lineStyleCombo.SelectedItem = StyleDisplayName(lineStyle);
                 fontCombo.SelectedItem = fontFamily;
                 updatingProperties = false;
                 return;
@@ -2139,6 +3004,7 @@ namespace AKDiagrams
                 widthBox.Value = ToNumeric(selectedItem.Bounds.Width);
                 heightBox.Value = ToNumeric(selectedItem.Bounds.Height);
                 lineWidthBox.Value = ToNumeric(Math.Max(1f, selectedItem.LineWidth));
+                lineStyleCombo.SelectedItem = StyleDisplayName(selectedItem.LineStyle);
             }
             else if (selectedItem.Type == "text" && selectedItem.Points.Count > 0)
             {
@@ -2146,6 +3012,7 @@ namespace AKDiagrams
                 yBox.Value = ToNumeric(selectedItem.Points[0].Y);
                 widthBox.Value = 0;
                 heightBox.Value = 0;
+                lineStyleCombo.SelectedItem = StyleDisplayName(selectedItem.LineStyle);
             }
             else if (selectedItem.Type == "wire")
             {
@@ -2155,6 +3022,11 @@ namespace AKDiagrams
                 widthBox.Value = ToNumeric(bounds.Width);
                 heightBox.Value = ToNumeric(bounds.Height);
                 lineWidthBox.Value = ToNumeric(Math.Max(1f, selectedItem.LineWidth));
+                lineStyleCombo.SelectedItem = StyleDisplayName(selectedItem.LineStyle);
+            }
+            else
+            {
+                lineStyleCombo.SelectedItem = StyleDisplayName(selectedItem.LineStyle);
             }
 
             if (!string.IsNullOrWhiteSpace(selectedItem.FontFamily) && fontCombo.Items.Contains(selectedItem.FontFamily))
@@ -2169,6 +3041,57 @@ namespace AKDiagrams
         {
             var clamped = Clamp(value, -10000f, 10000f);
             return Convert.ToDecimal(Math.Round(clamped));
+        }
+
+        private string StyleDisplayName(string style)
+        {
+            var normalized = NormalizeLineStyle(style);
+            if (normalized == "dash")
+            {
+                return "Dashed";
+            }
+            if (normalized == "dot")
+            {
+                return "Dotted";
+            }
+            return "Solid";
+        }
+
+        private string NormalizeLineStyle(string style)
+        {
+            var normalized = string.IsNullOrWhiteSpace(style) ? "solid" : style.Trim().ToLowerInvariant();
+            if (normalized == "dashed")
+            {
+                return "dash";
+            }
+            if (normalized == "dotted")
+            {
+                return "dot";
+            }
+            if (normalized == "dash" || normalized == "dot" || normalized == "solid")
+            {
+                return normalized;
+            }
+            return "solid";
+        }
+
+        private string GetSelectedLineStyle()
+        {
+            if (lineStyleCombo == null || lineStyleCombo.SelectedItem == null)
+            {
+                return NormalizeLineStyle(lineStyle);
+            }
+
+            var selected = Convert.ToString(lineStyleCombo.SelectedItem);
+            if (string.Equals(selected, "Dashed", StringComparison.OrdinalIgnoreCase))
+            {
+                return "dash";
+            }
+            if (string.Equals(selected, "Dotted", StringComparison.OrdinalIgnoreCase))
+            {
+                return "dot";
+            }
+            return "solid";
         }
 
         private void PickColor(string target)
@@ -2258,6 +3181,7 @@ namespace AKDiagrams
 
             UpdateColorButtons();
             canvas.Invalidate();
+            RecordHistory();
         }
 
         private void UpdateColorButtons()
@@ -2494,6 +3418,7 @@ namespace AKDiagrams
             selectedItem.Label = value;
             SetStatus("Label updated");
             canvas.Invalidate();
+            RecordHistory();
         }
 
         private void DeleteSelected()
@@ -2513,6 +3438,7 @@ namespace AKDiagrams
             UpdatePropertiesPanel();
             SetStatus("Deleted selection");
             canvas.Invalidate();
+            RecordHistory();
         }
 
         private void RemoveConnectionsTo(string itemId)
@@ -2565,6 +3491,7 @@ namespace AKDiagrams
             backgroundColor = Color.FromArgb(248, 248, 248);
             UpdateColorButtons();
             UpdatePropertiesPanel();
+            ClearHistory();
             SetStatus("New diagram");
             canvas.Invalidate();
         }
@@ -2599,6 +3526,7 @@ namespace AKDiagrams
                         nextItemNumber = GetNextItemNumber();
                         UpdateColorButtons();
                         UpdatePropertiesPanel();
+                        ClearHistory();
                         SetStatus("Opened " + Path.GetFileName(dialog.FileName));
                         canvas.Invalidate();
                     }
@@ -2838,13 +3766,13 @@ namespace AKDiagrams
                 if (item.Type == "rect")
                 {
                     var rect = item.Bounds.ToRectangleF();
-                    builder.AppendLine(string.Format("<rect x=\"{0:F2}\" y=\"{1:F2}\" width=\"{2:F2}\" height=\"{3:F2}\" fill=\"{4}\" stroke=\"{5}\" stroke-width=\"{6:F2}\"/>", rect.X, rect.Y, rect.Width, rect.Height, item.FillColor, item.OutlineColor, item.LineWidth));
+                    builder.AppendLine(string.Format("<rect x=\"{0:F2}\" y=\"{1:F2}\" width=\"{2:F2}\" height=\"{3:F2}\" fill=\"{4}\" stroke=\"{5}\" stroke-width=\"{6:F2}\"{7}/>", rect.X, rect.Y, rect.Width, rect.Height, item.FillColor, item.OutlineColor, item.LineWidth, GetSvgStrokeDashArray(item.LineStyle)));
                     AppendSvgText(builder, rect.X + rect.Width / 2f, rect.Y + rect.Height / 2f, item);
                 }
                 else if (item.Type == "ellipse")
                 {
                     var rect = item.Bounds.ToRectangleF();
-                    builder.AppendLine(string.Format("<ellipse cx=\"{0:F2}\" cy=\"{1:F2}\" rx=\"{2:F2}\" ry=\"{3:F2}\" fill=\"{4}\" stroke=\"{5}\" stroke-width=\"{6:F2}\"/>", rect.X + rect.Width / 2f, rect.Y + rect.Height / 2f, rect.Width / 2f, rect.Height / 2f, item.FillColor, item.OutlineColor, item.LineWidth));
+                    builder.AppendLine(string.Format("<ellipse cx=\"{0:F2}\" cy=\"{1:F2}\" rx=\"{2:F2}\" ry=\"{3:F2}\" fill=\"{4}\" stroke=\"{5}\" stroke-width=\"{6:F2}\"{7}/>", rect.X + rect.Width / 2f, rect.Y + rect.Height / 2f, rect.Width / 2f, rect.Height / 2f, item.FillColor, item.OutlineColor, item.LineWidth, GetSvgStrokeDashArray(item.LineStyle)));
                     AppendSvgText(builder, rect.X + rect.Width / 2f, rect.Y + rect.Height / 2f, item);
                 }
                 else if (item.Type == "wire" && item.Points.Count >= 2)
@@ -2858,12 +3786,12 @@ namespace AKDiagrams
                     }
                     if (IsCurvedWire(item) && displayPoints.Count >= 3)
                     {
-                        builder.AppendLine(string.Format("<path d=\"{0}\" fill=\"none\" stroke=\"{1}\" stroke-width=\"{2:F2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"{3}/>", BuildCurvedSvgPath(displayPoints), item.LineColor, item.LineWidth, marker));
+                        builder.AppendLine(string.Format("<path d=\"{0}\" fill=\"none\" stroke=\"{1}\" stroke-width=\"{2:F2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"{3}{4}/>", BuildCurvedSvgPath(displayPoints), item.LineColor, item.LineWidth, GetSvgStrokeDashArray(item.LineStyle), marker));
                     }
                     else
                     {
                         var points = string.Join(" ", displayPoints.Select(p => string.Format("{0:F2},{1:F2}", p.X, p.Y)));
-                        builder.AppendLine(string.Format("<polyline points=\"{0}\" fill=\"none\" stroke=\"{1}\" stroke-width=\"{2:F2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"{3}/>", points, item.LineColor, item.LineWidth, marker));
+                        builder.AppendLine(string.Format("<polyline points=\"{0}\" fill=\"none\" stroke=\"{1}\" stroke-width=\"{2:F2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"{3}{4}/>", points, item.LineColor, item.LineWidth, GetSvgStrokeDashArray(item.LineStyle), marker));
                     }
                 }
                 else if (item.Type == "text" && item.Points.Count >= 1)
@@ -2885,6 +3813,20 @@ namespace AKDiagrams
         private void AppendSvgText(StringBuilder builder, float x, float y, DiagramItem item)
         {
             builder.AppendLine(string.Format("<text x=\"{0:F2}\" y=\"{1:F2}\" fill=\"{2}\" font-family=\"{3}\" font-size=\"18\" text-anchor=\"middle\" dominant-baseline=\"middle\">{4}</text>", x, y, item.TextColor, EscapeXml(item.FontFamily), EscapeXml(item.Label ?? string.Empty)));
+        }
+
+        private string GetSvgStrokeDashArray(string style)
+        {
+            var normalized = NormalizeLineStyle(style);
+            if (normalized == "dash")
+            {
+                return " stroke-dasharray=\"12 7\"";
+            }
+            if (normalized == "dot")
+            {
+                return " stroke-dasharray=\"2 6\"";
+            }
+            return string.Empty;
         }
 
         private string BuildCurvedSvgPath(List<PointF> points)

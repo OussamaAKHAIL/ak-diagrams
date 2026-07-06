@@ -1,5 +1,24 @@
 # Changelog
 
+## v3.0.1
+
+- Turned the custom-component editor into a small UI studio with straight lines, editable shapes, and adjustable thickness.
+- Saved custom-component previews as transparent PNGs instead of white-backed images.
+- Kept the connection-point workflow so custom symbols can still connect cleanly in diagrams.
+
+## v3.0.0
+
+- Added orthogonal wire turn dragging so elbows can be rearranged without breaking right-angle routing.
+- Added line style support for solid, dashed, and dotted elements.
+- Added a Components sidebar with shapes, lines, and custom component packages.
+- Added a custom component editor with connection points and zip import/export.
+- Added a reusable app icon and logo-based branding for the executable and README.
+
+## v2.2.0
+
+- Stabilized the editor before the v3 component-library work.
+- Kept the wire, color, export, and property-editing workflow from the earlier releases.
+
 ## v2.1.1
 
 - Fixed a crash when starting a wire and the preview briefly had fewer than two drawable points.
