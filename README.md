@@ -1,6 +1,7 @@
-![ak-diagrams logo](media/logo 1.png)
+# AK-Diagrams
 
-# ak-diagrams
+<img src="media/logo%201.png" alt="AKDiagrams Logo" width="150"/>
+
 
 ![Language](https://img.shields.io/badge/Language-C%23-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows-blue.svg)
